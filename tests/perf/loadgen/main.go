@@ -105,6 +105,7 @@ type scenarioResult struct {
 	Received          int64   `json:"received"`
 	DeliveryRatio     float64 `json:"delivery_ratio"`
 	Errors            int64   `json:"errors"`
+	PublishErrors     int64   `json:"publish_errors,omitempty"`
 	SubscribeOps      int64   `json:"subscribe_ops,omitempty"`
 	UnsubscribeOps    int64   `json:"unsubscribe_ops,omitempty"`
 	PublishRateMPS    float64 `json:"publish_rate_mps"`
@@ -335,10 +336,10 @@ func main() {
 		exitErr(fmt.Errorf("failed to marshal result: %w", mErr))
 	}
 
-	fmt.Printf("scenario=%s desc=%q msg_size=%d sent=%d expected=%d received=%d publishers=%d consumers=%d groups=%d mps_sent=%.2f mps_recv=%.2f ratio=%.4f pass=%v errors=%d duration_ms=%d\n",
+	fmt.Printf("scenario=%s desc=%q msg_size=%d sent=%d expected=%d received=%d publishers=%d consumers=%d groups=%d mps_sent=%.2f mps_recv=%.2f ratio=%.4f pass=%v errors=%d publish_errors=%d duration_ms=%d\n",
 		res.Scenario, res.Description, res.PayloadBytes, res.Published, res.Expected, res.Received,
 		res.Publishers, res.Subscribers, res.ConsumerGroups, res.PublishRateMPS, res.ReceiveRateMPS,
-		res.DeliveryRatio, res.Pass, res.Errors, res.DurationMS)
+		res.DeliveryRatio, res.Pass, res.Errors, res.PublishErrors, res.DurationMS)
 	fmt.Println(string(line))
 
 	if *jsonOutFlag != "" {
@@ -560,8 +561,10 @@ func runConfiguredTopicScenario(ctx context.Context, cfg runConfig, sc topicScen
 
 	var sent atomic.Int64
 	var received atomic.Int64
-	var expected atomic.Int64
+	var attemptedExpected atomic.Int64
+	var failedExpected atomic.Int64
 	var errCount atomic.Int64
+	var publishErrCount atomic.Int64
 	seen := newDeduper()
 
 	stopReport := startPeriodicStatusReport(sc.Name, func() int64 { return sent.Load() }, func() int64 { return received.Load() })
@@ -617,8 +620,12 @@ func runConfiguredTopicScenario(ctx context.Context, cfg runConfig, sc topicScen
 		}
 		return topicSet[(pubIdx+msgIdx)%len(topicSet)]
 	}
-	onPublished := func(topic string) {
-		expected.Add(matchCounts[topic])
+	onAttempt := func(topic string) {
+		attemptedExpected.Add(matchCounts[topic])
+	}
+	onPublishError := func(topic string) {
+		failedExpected.Add(matchCounts[topic])
+		publishErrCount.Add(1)
 	}
 
 	var published int64
@@ -634,7 +641,8 @@ func runConfiguredTopicScenario(ctx context.Context, cfg runConfig, sc topicScen
 			PublishInterval:      resolvedPublishInterval(cfg.PublishInterval, sc.resolvedPublishInterval),
 			PublishJitter:        resolvedPublishJitter(cfg.PublishJitter, sc.resolvedPublishJitter),
 			TopicFor:             topicFor,
-			OnPublished:          onPublished,
+			OnAttempt:            onAttempt,
+			OnPublishError:       onPublishError,
 			ErrCount:             &errCount,
 			PublishedCounter:     &sent,
 			QoS:                  sc.resolvedQoS,
@@ -650,7 +658,8 @@ func runConfiguredTopicScenario(ctx context.Context, cfg runConfig, sc topicScen
 			PublishInterval:      resolvedPublishInterval(cfg.PublishInterval, sc.resolvedPublishInterval),
 			PublishJitter:        resolvedPublishJitter(cfg.PublishJitter, sc.resolvedPublishJitter),
 			TopicFor:             topicFor,
-			OnPublished:          onPublished,
+			OnAttempt:            onAttempt,
+			OnPublishError:       onPublishError,
 			ErrCount:             &errCount,
 			PublishedCounter:     &sent,
 		})
@@ -658,15 +667,20 @@ func runConfiguredTopicScenario(ctx context.Context, cfg runConfig, sc topicScen
 		return res, fmt.Errorf("unsupported publisher protocol %q", sc.resolvedPublisherProto)
 	}
 
-	_ = waitForAtLeast(&received, expected.Load(), cfg.DrainTimeout)
+	expected := attemptedExpected.Load() - failedExpected.Load()
+	if expected < 0 {
+		expected = 0
+	}
+	_ = waitForAtLeast(&received, expected, cfg.DrainTimeout)
 
 	res.Published = published
-	res.Expected = expected.Load()
+	res.Expected = expected
 	res.Received = received.Load()
 	res.Errors = errCount.Load()
+	res.PublishErrors = publishErrCount.Load()
 	res.DeliveryRatio = ratio(res.Received, res.Expected)
 	res.Pass = res.DeliveryRatio >= cfg.MinRatio
-	res.Notes = fmt.Sprintf("config pattern=%s flow=%s topics=%d wildcard_subscribers=%d qos=%d", sc.Pattern, sc.Flow, len(topicSet), sc.WildcardSubscribers, sc.resolvedQoS)
+	res.Notes = fmt.Sprintf("config pattern=%s flow=%s topics=%d wildcard_subscribers=%d qos=%d publish_errors=%d", sc.Pattern, sc.Flow, len(topicSet), sc.WildcardSubscribers, sc.resolvedQoS, res.PublishErrors)
 	if sc.resolvedPublisherProto != "mqtt" && sc.resolvedSubscriberProto != "mqtt" {
 		res.Notes = res.Notes + "; qos applies to MQTT only"
 	}
@@ -2446,6 +2460,8 @@ type mqttPublishParams struct {
 	PublishInterval      time.Duration
 	PublishJitter        time.Duration
 	TopicFor             func(pubIdx, msgIdx int) string
+	OnAttempt            func(topic string)
+	OnPublishError       func(topic string)
 	OnPublished          func(topic string)
 	ErrCount             *atomic.Int64
 	PublishedCounter     *atomic.Int64
@@ -2534,9 +2550,15 @@ func runMQTTPublishers(ctx context.Context, params mqttPublishParams) int64 {
 				default:
 				}
 				topic := params.TopicFor(idx, msgIdx)
+				if params.OnAttempt != nil {
+					params.OnAttempt(topic)
+				}
 				msgID := fmt.Sprintf("%s-%d-%d", params.Scenario, idx, msgIdx)
 				payload := makePayload(msgID, params.PayloadSize)
 				if err := client.Publish(topic, payload, qos, false); err != nil {
+					if params.OnPublishError != nil {
+						params.OnPublishError(topic)
+					}
 					if params.ErrCount != nil {
 						params.ErrCount.Add(1)
 					}
@@ -2566,6 +2588,8 @@ type mqttQueuePublishParams struct {
 	PayloadSize          int
 	PublishInterval      time.Duration
 	PublishJitter        time.Duration
+	OnAttempt            func(topic string)
+	OnPublishError       func(topic string)
 	ErrCount             *atomic.Int64
 	PublishedCounter     *atomic.Int64
 }
@@ -2606,6 +2630,10 @@ func runMQTTQueuePublishers(ctx context.Context, params mqttQueuePublishParams) 
 					return
 				default:
 				}
+				topic := fmt.Sprintf("$queue/%s", params.QueueName)
+				if params.OnAttempt != nil {
+					params.OnAttempt(topic)
+				}
 				msgID := fmt.Sprintf("%s-q-%d-%d", params.Scenario, idx, msgIdx)
 				payload := makePayload(msgID, params.PayloadSize)
 				err := client.PublishToQueueWithOptions(&mqttclient.QueuePublishOptions{
@@ -2614,6 +2642,9 @@ func runMQTTQueuePublishers(ctx context.Context, params mqttQueuePublishParams) 
 					QoS:       1,
 				})
 				if err != nil {
+					if params.OnPublishError != nil {
+						params.OnPublishError(topic)
+					}
 					if params.ErrCount != nil {
 						params.ErrCount.Add(1)
 					}
@@ -2640,6 +2671,8 @@ type amqpTopicPublishParams struct {
 	PublishInterval      time.Duration
 	PublishJitter        time.Duration
 	TopicFor             func(pubIdx, msgIdx int) string
+	OnAttempt            func(topic string)
+	OnPublishError       func(topic string)
 	OnPublished          func(topic string)
 	ErrCount             *atomic.Int64
 	PublishedCounter     *atomic.Int64
@@ -2681,9 +2714,15 @@ func runAMQPTopicPublishers(ctx context.Context, params amqpTopicPublishParams) 
 				default:
 				}
 				topic := params.TopicFor(idx, msgIdx)
+				if params.OnAttempt != nil {
+					params.OnAttempt(topic)
+				}
 				msgID := fmt.Sprintf("%s-at-%d-%d", params.Scenario, idx, msgIdx)
 				payload := makePayload(msgID, params.PayloadSize)
 				if err := client.Publish(topic, payload); err != nil {
+					if params.OnPublishError != nil {
+						params.OnPublishError(topic)
+					}
 					if params.ErrCount != nil {
 						params.ErrCount.Add(1)
 					}
