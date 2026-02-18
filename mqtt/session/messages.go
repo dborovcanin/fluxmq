@@ -4,6 +4,7 @@
 package session
 
 import (
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -138,7 +139,14 @@ func (h *msgHandler) resendMessage(writer core.PacketWriter, inflight *messages.
 	}
 
 	pub := h.newPublishPacket(msg, inflight.PacketID)
-	return writer.WriteDataPacket(pub, onSent)
+	err := writer.TryWriteDataPacket(pub, onSent)
+	if errors.Is(err, core.ErrSendQueueFull) {
+		// Reset the backoff timer so this message doesn't fire on every
+		// ProcessRetries call while the queue remains full.
+		h.inflight.MarkDeliveryAttempted(inflight.PacketID)
+		return nil
+	}
+	return err
 }
 
 func (h *msgHandler) newPublishPacket(msg *storage.Message, packetID uint16) packets.ControlPacket {

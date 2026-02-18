@@ -23,6 +23,10 @@ const (
 
 // InflightMessage represents a message in flight (waiting for acknowledgment).
 type InflightMessage struct {
+	// DeliveryAttemptedAt is set when delivery is first attempted (before write).
+	// Used to retry messages where the send queue was full and SentAt was never set.
+	DeliveryAttemptedAt time.Time
+	// SentAt is set only after a successful socket write (via onSent callback).
 	SentAt    time.Time
 	Message   *storage.Message
 	State     InflightState
@@ -51,6 +55,7 @@ type Inflight interface {
 	ClearReceived(packetID uint16)
 	GetExpired(expiry time.Duration) []*InflightMessage
 	MarkSent(packetID uint16)
+	MarkDeliveryAttempted(packetID uint16)
 	MarkRetry(packetID uint16) error
 	GetAll() []*InflightMessage
 	CleanupExpiredReceived(olderThan time.Duration)
@@ -156,7 +161,15 @@ func (t *inflight) Remove(packetID uint16) {
 	delete(t.messages, packetID)
 }
 
-// GetExpired returns messages that have exceeded the retry timeout.
+// neverSentRetryDelay is the time to wait before retrying a message that was
+// never written to the wire (e.g., send queue was full on first delivery attempt).
+const neverSentRetryDelay = 500 * time.Millisecond
+
+// GetExpired returns messages that should be retried.
+// A message is eligible if:
+//   - SentAt is set and the retry timeout has elapsed, or
+//   - SentAt is zero (never written to wire) but DeliveryAttemptedAt was set
+//     and the neverSentRetryDelay has elapsed.
 func (t *inflight) GetExpired(timeout time.Duration) []*InflightMessage {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -166,6 +179,11 @@ func (t *inflight) GetExpired(timeout time.Duration) []*InflightMessage {
 
 	for _, msg := range t.messages {
 		if msg.SentAt.IsZero() {
+			// Never written to wire; retry after neverSentRetryDelay if delivery was attempted.
+			if !msg.DeliveryAttemptedAt.IsZero() && now.Sub(msg.DeliveryAttemptedAt) >= neverSentRetryDelay {
+				cp := *msg
+				expired = append(expired, &cp)
+			}
 			continue
 		}
 		if now.Sub(msg.SentAt) >= timeout {
@@ -183,6 +201,18 @@ func (t *inflight) MarkSent(packetID uint16) {
 
 	if msg, ok := t.messages[packetID]; ok {
 		msg.SentAt = time.Now()
+	}
+}
+
+// MarkDeliveryAttempted records the time of the most recent delivery attempt.
+// Each call overwrites the previous timestamp, resetting the neverSentRetryDelay
+// backoff so a failed retry doesn't immediately re-appear in GetExpired.
+func (t *inflight) MarkDeliveryAttempted(packetID uint16) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if msg, ok := t.messages[packetID]; ok {
+		msg.DeliveryAttemptedAt = time.Now()
 	}
 }
 

@@ -46,6 +46,10 @@ func (m *mockConnection) WriteDataPacket(p packets.ControlPacket, onSent func())
 	return nil
 }
 
+func (m *mockConnection) TryWriteDataPacket(p packets.ControlPacket, onSent func()) error {
+	return m.WriteDataPacket(p, onSent)
+}
+
 func (m *mockConnection) ReadPacket() (packets.ControlPacket, error) {
 	return nil, io.EOF
 }

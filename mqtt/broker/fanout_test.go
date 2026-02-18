@@ -58,11 +58,11 @@ func TestFanOutPoolCloseDrainsQueuedTasks(t *testing.T) {
 		close(started)
 		<-release
 	}))
+	<-started
+
 	require.True(t, p.Submit(func() {
 		secondRan.Store(true)
 	}))
-
-	<-started
 
 	closed := make(chan struct{})
 	go func() {
@@ -86,4 +86,27 @@ func TestFanOutPoolCloseDrainsQueuedTasks(t *testing.T) {
 		}
 	}, 500*time.Millisecond, 10*time.Millisecond)
 	require.True(t, secondRan.Load())
+}
+
+func TestFanOutPoolSubmitReturnsFalseWhenQueueIsFull(t *testing.T) {
+	p := newFanOutPool(1)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	// Occupy the only worker.
+	require.True(t, p.Submit(func() {
+		close(started)
+		<-release
+	}))
+	<-started
+
+	// Fill the bounded queue (capacity == workers == 1).
+	require.True(t, p.Submit(func() {}))
+
+	// Further submit should fail fast instead of blocking.
+	require.False(t, p.Submit(func() {}))
+
+	close(release)
+	p.Close()
 }

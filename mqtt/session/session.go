@@ -414,6 +414,19 @@ func (s *Session) WriteDataPacket(pkt packets.ControlPacket, onSent func()) erro
 	return conn.WriteDataPacket(pkt, onSent)
 }
 
+// TryWriteDataPacket is a non-blocking variant that returns ErrSendQueueFull
+// immediately if the send queue is full, without blocking or disconnecting.
+func (s *Session) TryWriteDataPacket(pkt packets.ControlPacket, onSent func()) error {
+	s.mu.RLock()
+	conn := s.conn
+	s.mu.RUnlock()
+
+	if conn == nil {
+		return ErrNotConnected
+	}
+	return conn.TryWriteDataPacket(pkt, onSent)
+}
+
 // ReadPacket reads a packet from the connection.
 func (s *Session) ReadPacket() (packets.ControlPacket, error) {
 	s.mu.RLock()

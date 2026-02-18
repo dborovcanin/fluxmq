@@ -474,6 +474,10 @@ func (m *mockBenchConn) WriteDataPacket(pkt packets.ControlPacket, onSent func()
 	return nil
 }
 
+func (m *mockBenchConn) TryWriteDataPacket(pkt packets.ControlPacket, onSent func()) error {
+	return m.WriteDataPacket(pkt, onSent)
+}
+
 func (m *mockBenchConn) Read(b []byte) (n int, err error) {
 	return 0, nil
 }

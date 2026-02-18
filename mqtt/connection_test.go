@@ -392,6 +392,46 @@ func TestAsyncConnectionCallbackRunsAfterWrite(t *testing.T) {
 	}
 }
 
+func TestTryWriteDataPacket_DisconnectsClientWhenConfigured(t *testing.T) {
+	rc := newRecordingConn(true)
+	conn := core.NewConnection(rc, 1, true) // disconnectOnFull=true
+
+	require.NoError(t, conn.TryWriteDataPacket(publishPacket(1), nil))
+	rc.awaitWriteStart(t)
+	require.NoError(t, conn.TryWriteDataPacket(publishPacket(2), nil))
+
+	// Queue full: should disconnect and return ErrSendQueueFull.
+	err := conn.TryWriteDataPacket(publishPacket(3), nil)
+	require.ErrorIs(t, err, core.ErrSendQueueFull)
+
+	// Connection must be closed now.
+	rc.unblockWrites()
+	require.Eventually(t, func() bool {
+		err := conn.TryWriteDataPacket(publishPacket(4), nil)
+		return errors.Is(err, net.ErrClosed)
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestTryWriteDataPacket_DoesNotDisconnectWhenNotConfigured(t *testing.T) {
+	rc := newRecordingConn(true)
+	conn := core.NewConnection(rc, 1, false) // disconnectOnFull=false
+
+	require.NoError(t, conn.TryWriteDataPacket(publishPacket(1), nil))
+	rc.awaitWriteStart(t)
+	require.NoError(t, conn.TryWriteDataPacket(publishPacket(2), nil))
+
+	// Queue full: should return ErrSendQueueFull without disconnecting.
+	err := conn.TryWriteDataPacket(publishPacket(3), nil)
+	require.ErrorIs(t, err, core.ErrSendQueueFull)
+
+	// Unblock and drain the queue; connection should still be functional.
+	rc.unblockWrites()
+	_ = rc.nextWrite(t) // pkt 1
+	_ = rc.nextWrite(t) // pkt 2
+
+	require.NoError(t, conn.TryWriteDataPacket(publishPacket(4), nil))
+}
+
 func publishPacket(id uint16) *v3.Publish {
 	return &v3.Publish{
 		FixedHeader: v3.FixedHeader{PacketType: v3.PublishType, QoS: 1},

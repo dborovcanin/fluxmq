@@ -295,6 +295,10 @@ func (c *wsConnection) WriteDataPacket(pkt packets.ControlPacket, onSent func())
 	return c.writePacket(pkt, onSent)
 }
 
+func (c *wsConnection) TryWriteDataPacket(pkt packets.ControlPacket, onSent func()) error {
+	return c.writePacket(pkt, onSent)
+}
+
 func (c *wsConnection) writePacket(pkt packets.ControlPacket, onSent func()) error {
 	if pkt == nil {
 		return ErrCannotEncodeNilPacket

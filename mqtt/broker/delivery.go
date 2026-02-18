@@ -6,6 +6,7 @@ package broker
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/absmach/fluxmq/broker/events"
 	"github.com/absmach/fluxmq/cluster"
+	core "github.com/absmach/fluxmq/mqtt"
 	"github.com/absmach/fluxmq/mqtt/packets"
 	v3 "github.com/absmach/fluxmq/mqtt/packets/v3"
 	v5 "github.com/absmach/fluxmq/mqtt/packets/v5"
@@ -98,11 +100,20 @@ func (b *Broker) DeliverToSession(s *session.Session, msg *storage.Message) (uin
 		return 0, err
 	}
 
+	// Record that delivery was attempted so GetExpired can retry messages
+	// that never reached the wire (e.g. send queue full on first attempt).
+	s.Inflight().MarkDeliveryAttempted(packetID)
+
 	onSent := func() {
 		s.Inflight().MarkSent(packetID)
 	}
 	if err := b.DeliverMessage(s, msg, onSent); err != nil {
-		// Delivery failed, but message is in inflight so buffer stays (will be retried)
+		if errors.Is(err, core.ErrSendQueueFull) {
+			// Send queue full; message stays in inflight and will be retried
+			// by ProcessRetries once the queue drains.
+			return packetID, nil
+		}
+		// Other delivery failure; message is in inflight and will be retried.
 		return packetID, err
 	}
 
@@ -206,9 +217,9 @@ func (b *Broker) DeliverMessage(s *session.Session, msg *storage.Message, onSent
 		wrappedOnSent = releasePub
 	}
 
-	err := s.WriteDataPacket(pub, wrappedOnSent)
+	err := s.TryWriteDataPacket(pub, wrappedOnSent)
 	if err != nil {
-		// WriteDataPacket failed without enqueuing; release immediately.
+		// TryWriteDataPacket failed without enqueuing; release immediately.
 		releasePub()
 	}
 	return err

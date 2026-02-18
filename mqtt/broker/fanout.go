@@ -42,7 +42,7 @@ func (p *fanOutPool) run() {
 }
 
 // Submit enqueues a fan-out task.
-// Returns false when the pool is closed.
+// Returns false when the pool is closed or currently saturated.
 func (p *fanOutPool) Submit(fn func()) bool {
 	if fn == nil {
 		return true
@@ -52,8 +52,12 @@ func (p *fanOutPool) Submit(fn func()) bool {
 	if p.closed {
 		return false
 	}
-	p.tasks <- fn
-	return true
+	select {
+	case p.tasks <- fn:
+		return true
+	default:
+		return false
+	}
 }
 
 // Close drains queued tasks and waits for all workers to finish.

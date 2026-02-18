@@ -56,6 +56,10 @@ func (c *testConn) WriteDataPacket(_ packets.ControlPacket, onSent func()) error
 	}
 	return nil
 }
+
+func (c *testConn) TryWriteDataPacket(pkt packets.ControlPacket, onSent func()) error {
+	return c.WriteDataPacket(pkt, onSent)
+}
 func (c *testConn) SetKeepAlive(_ time.Duration) error { return nil }
 func (c *testConn) SetOnDisconnect(fn func(graceful bool)) {
 	c.onDisconnect = fn

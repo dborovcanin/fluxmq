@@ -23,7 +23,7 @@ var (
 
 	ErrUnsupportedProtocolVersion = errors.New("unsupported MQTT protocol version")
 	ErrCannotEncodeNilPacket      = errors.New("cannot encode nil packet")
-	ErrSendQueueFull              = errors.New("send queue full: client disconnected")
+	ErrSendQueueFull              = errors.New("send queue full")
 )
 
 // Connection represents a network connection that can read/write MQTT packets.
@@ -42,6 +42,10 @@ type PacketWriter interface {
 	WritePacket(pkt packets.ControlPacket) error
 	WriteControlPacket(pkt packets.ControlPacket, onSent func()) error
 	WriteDataPacket(pkt packets.ControlPacket, onSent func()) error
+	// TryWriteDataPacket is a non-blocking variant of WriteDataPacket.
+	// It returns ErrSendQueueFull immediately if the send queue is full,
+	// without disconnecting or blocking the caller.
+	TryWriteDataPacket(pkt packets.ControlPacket, onSent func()) error
 }
 
 type PacketReader interface {
@@ -193,6 +197,34 @@ func (c *connection) WriteDataPacket(pkt packets.ControlPacket, onSent func()) e
 		return nil
 	case <-c.closeCh:
 		return net.ErrClosed
+	}
+}
+
+func (c *connection) TryWriteDataPacket(pkt packets.ControlPacket, onSent func()) error {
+	if pkt == nil {
+		return ErrCannotEncodeNilPacket
+	}
+
+	if c.dataCh == nil {
+		return c.writeSync(pkt, onSent)
+	}
+
+	if c.closed.Load() {
+		return net.ErrClosed
+	}
+
+	item := sendItem{pkt: pkt, onSent: onSent}
+	select {
+	case c.dataCh <- item:
+		return nil
+	case <-c.closeCh:
+		return net.ErrClosed
+	default:
+		if c.disconnectOnFull {
+			c.markClosed()
+			_ = c.conn.Close()
+		}
+		return ErrSendQueueFull
 	}
 }
 

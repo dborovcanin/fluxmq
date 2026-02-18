@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	core "github.com/absmach/fluxmq/mqtt"
 	"github.com/absmach/fluxmq/mqtt/packets"
 	v3 "github.com/absmach/fluxmq/mqtt/packets/v3"
 	v5 "github.com/absmach/fluxmq/mqtt/packets/v5"
@@ -149,9 +150,14 @@ func (w *mockWriter) WriteDataPacket(pkt packets.ControlPacket, onSent func()) e
 	return nil
 }
 
+func (w *mockWriter) TryWriteDataPacket(pkt packets.ControlPacket, onSent func()) error {
+	return w.WriteDataPacket(pkt, onSent)
+}
+
 type fakeInflight struct {
-	expired    []*messages.InflightMessage
-	retryCalls []uint16
+	expired                 []*messages.InflightMessage
+	retryCalls              []uint16
+	deliveryAttemptedCalls  []uint16
 }
 
 func (f *fakeInflight) Add(packetID uint16, msg *storage.Message, direction messages.Direction) error {
@@ -178,6 +184,10 @@ func (f *fakeInflight) GetExpired(expiry time.Duration) []*messages.InflightMess
 
 func (f *fakeInflight) MarkSent(packetID uint16) {}
 
+func (f *fakeInflight) MarkDeliveryAttempted(packetID uint16) {
+	f.deliveryAttemptedCalls = append(f.deliveryAttemptedCalls, packetID)
+}
+
 func (f *fakeInflight) MarkRetry(packetID uint16) error {
 	f.retryCalls = append(f.retryCalls, packetID)
 	for _, inf := range f.expired {
@@ -192,3 +202,41 @@ func (f *fakeInflight) MarkRetry(packetID uint16) error {
 func (f *fakeInflight) GetAll() []*messages.InflightMessage { return nil }
 
 func (f *fakeInflight) CleanupExpiredReceived(olderThan time.Duration) {}
+
+// queueFullWriter returns ErrSendQueueFull for every TryWriteDataPacket call.
+type queueFullWriter struct{}
+
+func (w *queueFullWriter) WritePacket(_ packets.ControlPacket) error { return nil }
+func (w *queueFullWriter) WriteControlPacket(_ packets.ControlPacket, onSent func()) error {
+	if onSent != nil {
+		onSent()
+	}
+	return nil
+}
+func (w *queueFullWriter) WriteDataPacket(_ packets.ControlPacket, onSent func()) error {
+	return core.ErrSendQueueFull
+}
+func (w *queueFullWriter) TryWriteDataPacket(_ packets.ControlPacket, _ func()) error {
+	return core.ErrSendQueueFull
+}
+
+func TestProcessRetries_ResetsBackoffOnQueueFull(t *testing.T) {
+	f := &fakeInflight{
+		expired: []*messages.InflightMessage{
+			{
+				PacketID:  1,
+				Direction: messages.Outbound,
+				State:     messages.StatePublishSent,
+				Message:   &storage.Message{Topic: "t", QoS: 1, Payload: []byte("a")},
+			},
+		},
+	}
+	h := newMessageHandler(f, nil, 4)
+
+	h.ProcessRetries(&queueFullWriter{})
+
+	// MarkRetry must NOT be called — the message never reached the wire.
+	require.Empty(t, f.retryCalls)
+	// MarkDeliveryAttempted must be called to reset the 500ms backoff timer.
+	require.Equal(t, []uint16{1}, f.deliveryAttemptedCalls)
+}
