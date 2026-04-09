@@ -16,6 +16,8 @@ const (
 	defaultCBMaxRequests   = 3
 	defaultCBOpenInterval  = 10 * time.Second
 	defaultCBFailThreshold = 5
+	defaultRetryAttempts   = 2
+	defaultRetryBackoff    = 100 * time.Millisecond
 )
 
 // Protocol identifies which messaging protocol the client connected with.
@@ -30,10 +32,12 @@ const (
 
 // Options holds configuration shared by all callout transports.
 type Options struct {
-	Timeout  time.Duration
-	Logger   *slog.Logger
-	CB       *gobreaker.CircuitBreaker
-	Protocol Protocol
+	Timeout       time.Duration
+	Logger        *slog.Logger
+	CB            *gobreaker.CircuitBreaker
+	Protocol      Protocol
+	RetryAttempts int
+	RetryBackoff  time.Duration
 }
 
 // Option configures a callout client.
@@ -76,8 +80,10 @@ func WithProtocol(p Protocol) Option {
 // DefaultOptions returns Options with sensible defaults.
 func DefaultOptions(opts ...Option) Options {
 	o := Options{
-		Timeout: defaultTimeout,
-		Logger:  slog.Default(),
+		Timeout:       defaultTimeout,
+		Logger:        slog.Default(),
+		RetryAttempts: defaultRetryAttempts,
+		RetryBackoff:  defaultRetryBackoff,
 	}
 	for _, fn := range opts {
 		fn(&o)
@@ -86,6 +92,25 @@ func DefaultOptions(opts ...Option) Options {
 		o.CB = DefaultCircuitBreaker(o.Logger)
 	}
 	return o
+}
+
+// WithRetryAttempts sets the number of attempts for transient errors.
+// Must be >= 1; a value of 1 disables retries.
+func WithRetryAttempts(n int) Option {
+	return func(o *Options) {
+		if n >= 1 {
+			o.RetryAttempts = n
+		}
+	}
+}
+
+// WithRetryBackoff sets the wait between retry attempts.
+func WithRetryBackoff(d time.Duration) Option {
+	return func(o *Options) {
+		if d >= 0 {
+			o.RetryBackoff = d
+		}
+	}
 }
 
 // DefaultCircuitBreaker creates a circuit breaker with default settings.
