@@ -13,7 +13,7 @@ import (
 
 const (
 	defaultTimeout         = 2 * time.Second
-	defaultCBMaxRequests   = 3
+	defaultCBMaxRequests   = 1
 	defaultCBOpenInterval  = 10 * time.Second
 	defaultCBFailThreshold = 5
 	defaultRetryAttempts   = 2
@@ -124,7 +124,7 @@ func DefaultCircuitBreaker(logger *slog.Logger) *gobreaker.CircuitBreaker {
 			return counts.ConsecutiveFailures >= defaultCBFailThreshold
 		},
 		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-			logger.Debug("auth callout circuit breaker state changed",
+			logger.Info("auth callout circuit breaker state changed",
 				slog.String("from", from.String()),
 				slog.String("to", to.String()))
 		},

@@ -65,7 +65,7 @@ func client(baseURL string) *http.Client {
 		Transport: &http2.Transport{
 			AllowHTTP: true,
 			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, network, addr)
+				return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)
 			},
 			// Send a ping after 10 s of inactivity so a server-side idle
 			// close is detected before the next auth call fails.
