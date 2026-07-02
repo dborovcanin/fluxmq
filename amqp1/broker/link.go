@@ -167,6 +167,15 @@ func (l *Link) subscribe() {
 	}
 	if address != l.address {
 		l.normalizedAddress = address
+		// Rederive queue routing from the normalized address so the queue
+		// subscription matches what the hook authorized.
+		if l.isQueue {
+			if l.capabilityBased {
+				l.queueName = address
+			} else if route := l.session.conn.broker.routeResolver.Resolve(address); route.Kind == corebroker.RouteQueue {
+				l.queueName = route.QueueName
+			}
+		}
 	}
 
 	if l.isQueue {
@@ -174,13 +183,13 @@ func (l *Link) subscribe() {
 		ctx := context.Background()
 		qm := l.session.conn.broker.queueLinkManager
 		if qm == nil {
-			l.logger.Warn("queue manager not available for subscription", "address", l.address)
+			l.logger.Warn("queue manager not available for subscription", "address", address)
 			return
 		}
 
 		pattern := ""
 		if !l.capabilityBased {
-			if _, pat := corebroker.ParseQueueFilter(l.address); pat != "" {
+			if _, pat := corebroker.ParseQueueFilter(address); pat != "" {
 				pattern = pat
 			}
 		}

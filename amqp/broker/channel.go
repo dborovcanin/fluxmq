@@ -356,6 +356,14 @@ func (ch *Channel) completePublish() {
 		return
 	}
 	topic, body, props = hookReq.Topic, hookReq.Payload, hookReq.Properties
+	// Named-exchange topics are built as "<exchange>/<routingKey>"; rederive the
+	// routing key so binding matches use the hook-normalized value. Hooks cannot
+	// rename the exchange itself — a rewritten topic must keep the prefix.
+	if exchangeName != "" {
+		if after, found := strings.CutPrefix(topic, exchangeName+"/"); found {
+			routingKey = after
+		}
+	}
 	if auth := ch.conn.broker.auth; auth != nil {
 		if !auth.CanPublish(clientID, topic) {
 			ch.conn.logger.Warn("publish denied", "client_id", clientID, "topic", topic)

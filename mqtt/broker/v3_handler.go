@@ -230,9 +230,12 @@ func (h *V3Handler) HandlePublish(s *session.Session, pkt packets.ControlPacket)
 		h.broker.telemetry.stats.IncrementAuthzErrors()
 		return ErrNotAuthorized
 	}
-	topic, payload, qos, retain, props = hookReq.Topic, hookReq.Payload, hookReq.QoS, hookReq.Retain, setOriginProperties(hookReq.Properties, hookReq.ExternalID)
-	if maxQoS := h.broker.MaxQoS(); qos > maxQoS {
-		qos = maxQoS
+	topic, payload, retain, props = hookReq.Topic, hookReq.Payload, hookReq.Retain, setOriginProperties(hookReq.Properties, hookReq.ExternalID)
+	// The ack flow keys off the client-sent QoS (MQTT 3.1.1 spec 3.3.4); hook
+	// QoS mutations apply only to the delivered message.
+	msgQoS := hookReq.QoS
+	if maxQoS := h.broker.MaxQoS(); msgQoS > maxQoS {
+		msgQoS = maxQoS
 	}
 	if topic != requestedTopic {
 		if err := topics.ValidateTopicName(topic); err != nil {
@@ -253,7 +256,7 @@ func (h *V3Handler) HandlePublish(s *session.Session, pkt packets.ControlPacket)
 		msg := storage.AcquireMessage()
 		msg.Topic = topic
 		msg.ClientID = s.ID
-		msg.QoS = qos
+		msg.QoS = msgQoS
 		msg.Retain = retain
 		msg.Properties = props
 		msg.SetPayloadFromBuffer(buf)
@@ -271,7 +274,7 @@ func (h *V3Handler) HandlePublish(s *session.Session, pkt packets.ControlPacket)
 		msg := storage.AcquireMessage()
 		msg.Topic = topic
 		msg.ClientID = s.ID
-		msg.QoS = qos
+		msg.QoS = msgQoS
 		msg.Retain = retain
 		msg.Properties = props
 		msg.SetPayloadFromBuffer(buf)
@@ -301,7 +304,7 @@ func (h *V3Handler) HandlePublish(s *session.Session, pkt packets.ControlPacket)
 		storeMsg := storage.AcquireMessage()
 		storeMsg.Topic = topic
 		storeMsg.ClientID = s.ID
-		storeMsg.QoS = qos
+		storeMsg.QoS = msgQoS
 		storeMsg.Retain = retain
 		storeMsg.PacketID = packetID
 		storeMsg.Properties = props
@@ -460,7 +463,6 @@ func (h *V3Handler) HandleSubscribe(s *session.Session, pkt packets.ControlPacke
 				reasonCodes[i] = v3.SubAckFailure
 				continue
 			}
-			s.AddSubscriptionAlias(t.Name, filter)
 		}
 		if h.broker.auth != nil && !h.broker.CanSubscribe(s.ID, filter) {
 			h.broker.telemetry.stats.IncrementAuthzErrors()
@@ -486,6 +488,14 @@ func (h *V3Handler) HandleSubscribe(s *session.Session, pkt packets.ControlPacke
 		if err := h.broker.subscribe(s, filter, grantedQoS, opts); err != nil {
 			reasonCodes[i] = v3.SubAckFailure
 			continue
+		}
+		if filter != t.Name {
+			// Drop a previously normalized subscription for the same original
+			// filter so a changed hook mapping cannot orphan it in the router.
+			if prev := s.ResolveSubscriptionAlias(t.Name); prev != t.Name && prev != filter {
+				h.broker.unsubscribeInternal(s, prev) //nolint:errcheck // best-effort cleanup of stale normalized filter
+			}
+			s.AddSubscriptionAlias(t.Name, filter)
 		}
 
 		reasonCodes[i] = grantedQoS
@@ -539,14 +549,11 @@ func (h *V3Handler) HandleUnsubscribe(s *session.Session, pkt packets.ControlPac
 	h.broker.telemetry.logger.Info("v3_unsubscribe", slog.String("client_id", s.ID), slog.Int("topics", len(p.Topics)))
 
 	for _, filter := range p.Topics {
-		if resolved := s.ResolveSubscriptionAlias(filter); resolved != filter {
-			filter = resolved
-		} else {
-			filter, ok = h.broker.ApplyUnsubscribeHooks(context.Background(), s.ID, s.ExternalID, corebroker.HookProtocolMQTT, filter)
-			if !ok {
-				h.broker.telemetry.stats.IncrementAuthzErrors()
-				continue
-			}
+		filter = s.ResolveSubscriptionAlias(filter)
+		filter, ok = h.broker.ApplyUnsubscribeHooks(context.Background(), s.ID, s.ExternalID, corebroker.HookProtocolMQTT, filter)
+		if !ok {
+			h.broker.telemetry.stats.IncrementAuthzErrors()
+			continue
 		}
 		h.broker.unsubscribeInternal(s, filter) //nolint:errcheck // best-effort unsubscribe; errors are non-fatal
 	}
