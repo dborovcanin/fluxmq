@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"time"
 
+	corebroker "github.com/absmach/fluxmq/broker"
 	core "github.com/absmach/fluxmq/mqtt"
 	"github.com/absmach/fluxmq/mqtt/packets"
 	v5 "github.com/absmach/fluxmq/mqtt/packets/v5"
@@ -92,6 +93,14 @@ func (h *V5Handler) HandleConnect(conn core.Connection, pkt packets.ControlPacke
 		}
 		externalID = resolvedID
 	}
+	hookExternalID, ok := h.broker.ApplyRegisterHooks(context.Background(), clientID, externalID, p.Username, string(p.Password), corebroker.HookProtocolMQTT)
+	if !ok {
+		h.broker.telemetry.stats.IncrementAuthErrors()
+		sendV5ConnAck(conn, false, v5.ConnAckNotAuthorized, nil) //nolint:errcheck // best-effort rejection reply before closing
+		conn.Close()
+		return ErrNotAuthorized
+	}
+	externalID = hookExternalID
 
 	var will *storage.WillMessage
 	if p.WillFlag {
@@ -243,11 +252,6 @@ func (h *V5Handler) HandlePublish(s *session.Session, pkt packets.ControlPacket)
 		return sendV5PublishError(s, qos, packetID, v5.PubAckTopicNameInvalid, "Topic name invalid", ErrTopicInvalid)
 	}
 
-	if h.broker.auth != nil && !h.broker.auth.CanPublish(s.ID, topic) {
-		h.broker.telemetry.stats.IncrementAuthzErrors()
-		return sendV5PublishError(s, qos, packetID, v5.PubAckNotAuthorized, "Not authorized", nil)
-	}
-
 	// Extract message expiry interval if present
 	var messageExpiry *uint32
 	var expiryTime time.Time
@@ -271,6 +275,35 @@ func (h *V5Handler) HandlePublish(s *session.Session, pkt packets.ControlPacket)
 	// Extract MQTT v5 properties for queue functionality
 	properties := extractAllProperties(p.Properties)
 	properties = setOriginProperties(properties, s.ExternalID)
+
+	requestedTopic := topic
+	hookReq, ok := h.broker.ApplyPublishHooks(context.Background(), corebroker.BlockingHookRequest{
+		ClientID:   s.ID,
+		ExternalID: s.ExternalID,
+		Protocol:   corebroker.HookProtocolMQTT,
+		Topic:      topic,
+		Payload:    payload,
+		QoS:        qos,
+		Retain:     retain,
+		Properties: properties,
+	})
+	if !ok {
+		h.broker.telemetry.stats.IncrementAuthzErrors()
+		return sendV5PublishError(s, qos, packetID, v5.PubAckNotAuthorized, "Not authorized", nil)
+	}
+	topic, payload, qos, retain, properties = hookReq.Topic, hookReq.Payload, hookReq.QoS, hookReq.Retain, setOriginProperties(hookReq.Properties, hookReq.ExternalID)
+	if maxQoS := h.broker.MaxQoS(); qos > maxQoS {
+		qos = maxQoS
+	}
+	if topic != requestedTopic {
+		if err := topics.ValidateTopicName(topic); err != nil {
+			return sendV5PublishError(s, qos, packetID, v5.PubAckTopicNameInvalid, "Topic name invalid", ErrTopicInvalid)
+		}
+	}
+	if h.broker.auth != nil && !h.broker.CanPublish(s.ID, topic) {
+		h.broker.telemetry.stats.IncrementAuthzErrors()
+		return sendV5PublishError(s, qos, packetID, v5.PubAckNotAuthorized, "Not authorized", nil)
+	}
 
 	switch qos {
 	case 0:
@@ -491,7 +524,26 @@ func (h *V5Handler) HandleSubscribe(s *session.Session, pkt packets.ControlPacke
 			continue
 		}
 
-		if h.broker.auth != nil && !h.broker.auth.CanSubscribe(s.ID, t.Topic) {
+		filter := t.Topic
+		subQoS := t.MaxQoS
+		filter, subQoS, ok = h.broker.ApplySubscribeHooks(context.Background(), s.ID, s.ExternalID, corebroker.HookProtocolMQTT, filter, subQoS)
+		if !ok {
+			h.broker.telemetry.stats.IncrementAuthzErrors()
+			reasonCodes[i] = v5.SubAckNotAuthorized
+			continue
+		}
+		if subQoS > 2 {
+			reasonCodes[i] = v5.SubAckTopicFilterInvalid
+			continue
+		}
+		if filter != t.Topic {
+			if err := topics.ValidateTopicFilter(filter); err != nil {
+				reasonCodes[i] = v5.SubAckTopicFilterInvalid
+				continue
+			}
+			s.AddSubscriptionAlias(t.Topic, filter)
+		}
+		if h.broker.auth != nil && !h.broker.CanSubscribe(s.ID, filter) {
 			h.broker.telemetry.stats.IncrementAuthzErrors()
 			reasonCodes[i] = v5.SubAckNotAuthorized
 			continue
@@ -501,7 +553,7 @@ func (h *V5Handler) HandleSubscribe(s *session.Session, pkt packets.ControlPacke
 		if h.broker.rateLimiter != nil && !h.broker.rateLimiter.AllowSubscribe(s.ID) {
 			h.broker.telemetry.logger.Warn("v5_subscribe_rate_limit",
 				slog.String("client_id", s.ID),
-				slog.String("topic", t.Topic))
+				slog.String("topic", filter))
 			reasonCodes[i] = v5.SubAckQuotaExceeded
 			continue
 		}
@@ -522,7 +574,7 @@ func (h *V5Handler) HandleSubscribe(s *session.Session, pkt packets.ControlPacke
 
 		// Extract consumer group from subscription properties
 		consumerGroup := extractConsumerGroup(s.ID, p.Properties)
-		wasSubscribed := s.HasSubscription(t.Topic)
+		wasSubscribed := s.HasSubscription(filter)
 
 		opts := storage.SubscribeOptions{
 			NoLocal:           noLocal,
@@ -530,12 +582,12 @@ func (h *V5Handler) HandleSubscribe(s *session.Session, pkt packets.ControlPacke
 			RetainHandling:    retainHandling,
 			ConsumerGroup:     consumerGroup,
 		}
-		grantedQoS := t.MaxQoS
+		grantedQoS := subQoS
 		if maxQoS := h.broker.MaxQoS(); grantedQoS > maxQoS {
 			grantedQoS = maxQoS
 		}
 
-		if err := h.broker.subscribe(s, t.Topic, grantedQoS, opts); err != nil {
+		if err := h.broker.subscribe(s, filter, grantedQoS, opts); err != nil {
 			reasonCodes[i] = v5.SubAckImplementationSpecificError
 			continue
 		}
@@ -550,7 +602,7 @@ func (h *V5Handler) HandleSubscribe(s *session.Session, pkt packets.ControlPacke
 		}
 		if sendRetained {
 			// Send retained messages matching the subscription filter
-			retained, err := h.broker.GetRetainedMatching(t.Topic)
+			retained, err := h.broker.GetRetainedMatching(filter)
 			if err == nil {
 				for _, msg := range retained {
 					deliverQoS := msg.QoS
@@ -601,10 +653,20 @@ func (h *V5Handler) HandleUnsubscribe(s *session.Session, pkt packets.ControlPac
 
 	reasonCodes := make([]byte, len(p.Topics))
 	for i, filter := range p.Topics {
-		if err := h.broker.unsubscribeInternal(s, filter); err != nil {
-			reasonCodes[i] = v5.ConnAckUnspecifiedError
+		if resolved := s.ResolveSubscriptionAlias(filter); resolved != filter {
+			filter = resolved
 		} else {
-			reasonCodes[i] = v5.ConnAckSuccess
+			filter, ok = h.broker.ApplyUnsubscribeHooks(context.Background(), s.ID, s.ExternalID, corebroker.HookProtocolMQTT, filter)
+			if !ok {
+				h.broker.telemetry.stats.IncrementAuthzErrors()
+				reasonCodes[i] = v5.UnsubAckNotAuthorized
+				continue
+			}
+		}
+		if err := h.broker.unsubscribeInternal(s, filter); err != nil {
+			reasonCodes[i] = v5.UnsubAckUnspecifiedError
+		} else {
+			reasonCodes[i] = v5.UnsubAckSuccess
 		}
 	}
 
