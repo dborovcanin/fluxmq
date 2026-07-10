@@ -72,6 +72,11 @@ server:
     tls: {}
     mtls: {}
 
+  mqttsn:
+    plain:
+      addr: "" # set e.g. ":1885" to enable MQTT-SN UDP protocol layer
+      max_packet_size: 65535
+
   http:
     plain:
       addr: ":8080"
@@ -128,6 +133,9 @@ These apply to listener blocks (for example `server.tcp.v3`, `server.websocket.v
 | `protocol`        | MQTT parser mode. For TCP, use `v3` on `server.tcp.v3` and `v5` on `server.tcp.v5`; for WebSocket listeners you can use `auto`, `v3`, or `v5`. |
 | `path`            | HTTP path for MQTT-over-WebSocket endpoint.                                                                                                    |
 | `allowed_origins` | WebSocket origin allow-list. Empty list allows all origins; use explicit origins for production.                                               |
+| `max_packet_size` | MQTT-SN UDP datagram size cap. `0` uses the server default (`65535`).                                                                         |
+
+`server.mqttsn.plain` is disabled by default. The initial MQTT-SN listener handles CONNECT, keepalive, DISCONNECT, and topic ID registration. Broker publish/subscribe routing is not wired yet.
 
 ### Server Runtime / Telemetry Fields
 

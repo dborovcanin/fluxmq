@@ -237,6 +237,7 @@ type SubscribeRateLimitConfig struct {
 type ServerConfig struct {
 	TCP       TCPConfig       `yaml:"tcp"`
 	WebSocket WebSocketConfig `yaml:"websocket"`
+	MQTTSN    MQTTSNConfig    `yaml:"mqttsn"`
 	HTTP      HTTPConfig      `yaml:"http"`
 	CoAP      CoAPConfig      `yaml:"coap"`
 	AMQP      AMQPConfig      `yaml:"amqp"`
@@ -300,6 +301,17 @@ type WebSocketConfig struct {
 	V5   WSListenerConfig `yaml:"v5"`
 	TLS  WSListenerConfig `yaml:"tls"`
 	MTLS WSListenerConfig `yaml:"mtls"`
+}
+
+// MQTTSNListenerConfig holds MQTT-SN UDP listener configuration.
+type MQTTSNListenerConfig struct {
+	Addr          string `yaml:"addr"`
+	MaxPacketSize int    `yaml:"max_packet_size"`
+}
+
+// MQTTSNConfig groups MQTT-SN listeners by mode.
+type MQTTSNConfig struct {
+	Plain MQTTSNListenerConfig `yaml:"plain"`
 }
 
 // HTTPListenerConfig holds HTTP listener configuration.
@@ -670,6 +682,9 @@ func Default() *Config {
 					Protocol: ProtocolModeAuto,
 				},
 			},
+			MQTTSN: MQTTSNConfig{
+				Plain: MQTTSNListenerConfig{},
+			},
 			HTTP: HTTPConfig{
 				Plain: HTTPListenerConfig{},
 				TLS:   HTTPListenerConfig{},
@@ -979,6 +994,10 @@ func (c *Config) Validate() error {
 
 	if !hasMQTTListener {
 		return fmt.Errorf("at least one TCP or WebSocket listener must be configured")
+	}
+
+	if c.Server.MQTTSN.Plain.MaxPacketSize < 0 {
+		return fmt.Errorf("server.mqttsn.plain.max_packet_size cannot be negative")
 	}
 
 	c.Server.AdminAPIAddr = strings.TrimSpace(c.Server.AdminAPIAddr)

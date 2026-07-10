@@ -53,6 +53,7 @@ FluxMQ is optimized for event-driven systems that need ordered delivery, durable
   - **HTTP-MQTT Bridge** - RESTful API for publishing messages
   - **WebSocket Transport** - MQTT over WebSocket for browser clients
   - **CoAP Bridge** - UDP and DTLS (mDTLS) support for constrained IoT devices
+  - **MQTT-SN Protocol Layer** - UDP session and topic-id handling preview; broker routing is pending
   - MQTT transports share a broker; AMQP brokers are independent; queues are the shared durability layer
 
 - **Performance Optimized**

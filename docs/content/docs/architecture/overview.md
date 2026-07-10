@@ -60,6 +60,7 @@ FluxMQ is a multi-protocol message broker built around a shared queue manager. M
 
 - **Transports and Bridges**: `server/`
   - `server/tcp`, `server/websocket` for MQTT
+  - `server/mqttsn` for the MQTT-SN UDP protocol layer
   - `server/http` HTTP publish bridge
   - `server/coap` CoAP publish bridge
   - `server/amqp`, `server/amqp1` for AMQP listeners

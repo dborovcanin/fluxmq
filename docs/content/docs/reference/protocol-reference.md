@@ -20,6 +20,8 @@ FluxMQ supports multiple protocols and transports. Each protocol adapter transla
 | **HTTP**       | HTTP POST      | `/publish` endpoint                        | No                                 | No                                |
 | **CoAP**       | UDP            | CoAP POST                                  | No                                 | No                                |
 
+MQTT-SN 1.2 over UDP is available as an initial protocol-layer listener. It handles sessions, keepalive, disconnect, and topic ID registration; broker publish/subscribe routing is not wired yet.
+
 Protocol listeners are configured under `server.*` in the YAML config. See [Server configuration](/configuration/server).
 
 ## Protocol Adapter Design

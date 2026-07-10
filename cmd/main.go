@@ -40,6 +40,7 @@ import (
 	"github.com/absmach/fluxmq/server/coap"
 	"github.com/absmach/fluxmq/server/health"
 	"github.com/absmach/fluxmq/server/http"
+	"github.com/absmach/fluxmq/server/mqttsn"
 	"github.com/absmach/fluxmq/server/otel"
 	"github.com/absmach/fluxmq/server/tcp"
 	"github.com/absmach/fluxmq/server/websocket"
@@ -139,6 +140,7 @@ func main() {
 		"ws_v5_listener", cfg.Server.WebSocket.V5.Addr,
 		"ws_tls_listener", cfg.Server.WebSocket.TLS.Addr,
 		"ws_mtls_listener", cfg.Server.WebSocket.MTLS.Addr,
+		"mqttsn_plain_listener", cfg.Server.MQTTSN.Plain.Addr,
 		"http_plain_listener", cfg.Server.HTTP.Plain.Addr,
 		"http_tls_listener", cfg.Server.HTTP.TLS.Addr,
 		"http_mtls_listener", cfg.Server.HTTP.MTLS.Addr,
@@ -772,6 +774,24 @@ func main() {
 				serverErr <- err
 			}
 		}(slot.name, slot.cfg.Addr, slot.cfg.Path, slot.cfg.Protocol, wsServer)
+	}
+
+	if strings.TrimSpace(cfg.Server.MQTTSN.Plain.Addr) != "" {
+		mqttsnCfg := mqttsn.Config{
+			Address:         cfg.Server.MQTTSN.Plain.Addr,
+			ShutdownTimeout: cfg.Server.ShutdownTimeout,
+			MaxPacketSize:   cfg.Server.MQTTSN.Plain.MaxPacketSize,
+		}
+		mqttsnServer := mqttsn.New(mqttsnCfg, logger)
+
+		wg.Add(1)
+		go func(addr string, server *mqttsn.Server) {
+			defer wg.Done()
+			slog.Info("Starting MQTT-SN UDP server", "address", addr)
+			if err := server.Listen(ctx); err != nil {
+				serverErr <- err
+			}
+		}(cfg.Server.MQTTSN.Plain.Addr, mqttsnServer)
 	}
 
 	httpSlots := []struct {

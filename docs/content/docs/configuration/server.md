@@ -23,6 +23,10 @@ server:
       addr: ":8083"
       path: "/mqtt"
       protocol: "auto" # auto | v3 | v5
+  mqttsn:
+    plain:
+      addr: "" # set e.g. ":1885" to enable MQTT-SN UDP protocol layer
+      max_packet_size: 65535
   http:
     plain:
       addr: ":8080"
@@ -48,9 +52,10 @@ server:
 
 ## Key Fields
 
-- Listener families: `tcp`, `websocket`, `http`, `coap`, `amqp`, `amqp091`.
+- Listener families: `tcp`, `websocket`, `mqttsn`, `http`, `coap`, `amqp`, `amqp091`.
 - Listener addresses: `addr` (empty disables the specific listener).
 - MQTT parser mode per listener: TCP `v3`/`v5` listeners are protocol-pinned; WebSocket listeners can use `protocol` (`auto`, `v3`, `v5`).
+- MQTT-SN: `server.mqttsn.plain.addr` enables the UDP protocol layer. This initial listener handles MQTT-SN sessions and topic IDs; broker message routing is not wired yet.
 - Listener limits/timeouts: `max_connections`, `read_timeout`, `write_timeout`.
 - WebSocket specifics: `path`, `allowed_origins`.
 - Health/observability: `health_enabled`, `health_addr`, `metrics_enabled`, `metrics_addr`.

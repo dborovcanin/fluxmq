@@ -17,6 +17,11 @@ server:
     tls: {}
     mtls: {}
 
+  mqttsn:
+    plain:
+      addr: ""
+      max_packet_size: 65535
+
   http:
     plain: {}
     tls: {}

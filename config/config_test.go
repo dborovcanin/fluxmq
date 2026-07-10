@@ -198,6 +198,13 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "negative mqttsn max packet size",
+			modify: func(c *Config) {
+				c.Server.MQTTSN.Plain.MaxPacketSize = -1
+			},
+			wantErr: true,
+		},
+		{
 			name: "valid auth protocols",
 			modify: func(c *Config) {
 				c.Auth.URL = testAuthURL
