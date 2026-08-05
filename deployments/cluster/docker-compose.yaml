@@ -1,45 +1,73 @@
+x-fluxmq: &fluxmq
+  image: ghcr.io/absmach/fluxmq:latest
+  restart: unless-stopped
+  networks: [cluster]
+  secrets: [cluster_ca, cluster_cert, cluster_key]
+
 services:
   node1:
-    image: ghcr.io/absmach/fluxmq:latest
-    command: ["-config", "/etc/fluxmq/config.yaml"]
-    user: "0:0"
-    network_mode: host
+    <<: *fluxmq
+    command: ["--config", "/etc/fluxmq/config.yaml", "--node-id", "node1"]
     volumes:
-      - ./config/node1.yaml:/etc/fluxmq/config.yaml:ro
-      - /tmp/fluxmq/node1:/tmp/fluxmq/node1
-    restart: unless-stopped
+      - ./config/cluster.yaml:/etc/fluxmq/config.yaml:ro
+      - node1-data:/var/lib/fluxmq
+    ports:
+      - "1883:1883"
+      - "5682:5682"
+      - "5672:5672"
+      - "9081:8082"
+      - "8081:8081"
 
   node2:
-    image: ghcr.io/absmach/fluxmq:latest
-    command: ["-config", "/etc/fluxmq/config.yaml"]
-    user: "0:0"
-    network_mode: host
+    <<: *fluxmq
+    command: ["--config", "/etc/fluxmq/config.yaml", "--node-id", "node2"]
     volumes:
-      - ./config/node2.yaml:/etc/fluxmq/config.yaml:ro
-      - /tmp/fluxmq/node2:/tmp/fluxmq/node2
-    restart: unless-stopped
-    depends_on:
-      - node1
+      - ./config/cluster.yaml:/etc/fluxmq/config.yaml:ro
+      - node2-data:/var/lib/fluxmq
+    ports:
+      - "1884:1883"
+      - "5683:5682"
+      - "5673:5672"
+      - "9082:8082"
+      - "8082:8081"
 
   node3:
-    image: ghcr.io/absmach/fluxmq:latest
-    command: ["-config", "/etc/fluxmq/config.yaml"]
-    user: "0:0"
-    network_mode: host
+    <<: *fluxmq
+    command: ["--config", "/etc/fluxmq/config.yaml", "--node-id", "node3"]
     volumes:
-      - ./config/node3.yaml:/etc/fluxmq/config.yaml:ro
-      - /tmp/fluxmq/node3:/tmp/fluxmq/node3
-    restart: unless-stopped
-    depends_on:
-      - node1
+      - ./config/cluster.yaml:/etc/fluxmq/config.yaml:ro
+      - node3-data:/var/lib/fluxmq
+    ports:
+      - "1885:1883"
+      - "5684:5682"
+      - "5674:5672"
+      - "9083:8082"
+      - "8083:8081"
 
   dashboard:
     image: ghcr.io/absmach/fluxmq-dashboard:latest
-    network_mode: host
+    ports: ["3001:3001"]
     environment:
-      FLUXMQ_API_URL: ${FLUXMQ_API_URL:-http://127.0.0.1:9081}
-      FLUXMQ_NODE_URLS: ${FLUXMQ_NODE_URLS:-http://127.0.0.1:9081,http://127.0.0.1:9082,http://127.0.0.1:9083}
+      FLUXMQ_API_URL: http://node1:8082
+      FLUXMQ_NODE_URLS: http://node1:8082,http://node2:8082,http://node3:8082
       PORT: "3001"
-    depends_on:
-      - node1
+    depends_on: [node1, node2, node3]
+    networks: [cluster]
     restart: unless-stopped
+
+networks:
+  cluster:
+    driver: bridge
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+
+secrets:
+  cluster_ca:
+    file: ${FLUXMQ_CLUSTER_CA_FILE:-./secrets/cluster-ca.pem}
+  cluster_cert:
+    file: ${FLUXMQ_CLUSTER_CERT_FILE:-./secrets/cluster-cert.pem}
+  cluster_key:
+    file: ${FLUXMQ_CLUSTER_KEY_FILE:-./secrets/cluster-key.pem}

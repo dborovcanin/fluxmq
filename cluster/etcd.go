@@ -36,8 +36,6 @@ const (
 	queueConsumersPrefix = "/queue-consumers/"
 	electionPrefix       = "/leader"
 
-	urlPrefix = "http://"
-
 	defaultRouteBatchFlushWorkers = 4
 )
 
@@ -167,7 +165,15 @@ func NewEtcdCluster(cfg *EtcdConfig, localStore storage.Store, logger *slog.Logg
 	eCfg.Dir = cfg.DataDir
 
 	// Peer URLs (for Raft communication)
-	peerURL, err := url.Parse(urlPrefix + cfg.BindAddr)
+	peerScheme := "http://"
+	if cfg.TransportTLS != nil {
+		peerScheme = "https://"
+		eCfg.PeerTLSInfo.CertFile = cfg.TransportTLS.CertFile
+		eCfg.PeerTLSInfo.KeyFile = cfg.TransportTLS.KeyFile
+		eCfg.PeerTLSInfo.TrustedCAFile = cfg.TransportTLS.CAFile
+		eCfg.PeerTLSInfo.ClientCertAuth = true
+	}
+	peerURL, err := url.Parse(peerScheme + cfg.BindAddr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid bind address: %w", err)
 	}
@@ -175,7 +181,7 @@ func NewEtcdCluster(cfg *EtcdConfig, localStore storage.Store, logger *slog.Logg
 
 	// Advertise URL (what other nodes use to contact this node)
 	if cfg.AdvertiseAddr != "" {
-		advertiseURL, err := url.Parse(urlPrefix + cfg.AdvertiseAddr)
+		advertiseURL, err := url.Parse(peerScheme + cfg.AdvertiseAddr)
 		if err != nil {
 			return nil, fmt.Errorf("invalid advertise address: %w", err)
 		}
@@ -185,7 +191,7 @@ func NewEtcdCluster(cfg *EtcdConfig, localStore storage.Store, logger *slog.Logg
 	}
 
 	// Client URLs (for KV operations)
-	clientURL, err := url.Parse(urlPrefix + cfg.ClientAddr)
+	clientURL, err := url.Parse("http://" + cfg.ClientAddr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid client address: %w", err)
 	}

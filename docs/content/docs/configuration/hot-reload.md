@@ -107,13 +107,13 @@ connections immediately.
 
 All other fields require a full restart to take effect. These include:
 
-- **Server**: listener addresses, TLS certificates, WebSocket paths
+- **Listeners**: addresses, TLS certificates, WebSocket paths
 - **Storage**: storage backend configuration
 - **Cluster**: cluster topology and transport
 - **Session**: session defaults (affects existing connections)
 - **Webhook**: webhook worker pool configuration
 - **External auth**: `auth.external` callout and cache settings
-- **Local listener transport**: `server.amqp091.local` address, limits, and TLS settings
+- **Local listener transport**: `listeners.amqp091` entries with `auth: local`
 - **Hooks**: blocking hook callout configuration
 - **AMQP / AMQP 0.9.1**: all protocol-level settings
 

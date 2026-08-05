@@ -9,9 +9,8 @@ FluxMQ exposes HTTP endpoints for liveness probes, readiness probes, and
 cluster status queries. These are designed to integrate with Kubernetes,
 load-balancers, and monitoring systems.
 
-All endpoints are served by the health server when `server.health_enabled: true`
-(default). The listen address is controlled by `server.health_addr` (default
-`:8081`).
+All endpoints are served when `health.enabled: true`. The listen address is
+controlled by `health.address`.
 
 ## Endpoints
 
@@ -205,7 +204,7 @@ fluxmq_ready_mode{mode="degraded"} == 1
 ## Configuration
 
 ```yaml
-server:
-  health_enabled: true    # Enable health endpoints (default: true)
-  health_addr: ":8081"    # Listen address (default: ":8081")
+health:
+  enabled: true
+  address: ":8081"
 ```

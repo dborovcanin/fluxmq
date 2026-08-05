@@ -18,7 +18,7 @@ docker compose -f deployments/docker/compose.yaml up -d
 Use a custom config (example):
 
 ```bash
-FLUXMQ_CONFIG=../examples/no-cluster.yaml \
+FLUXMQ_CONFIG=../examples/production.yaml \
   docker compose -f deployments/docker/compose.yaml up -d
 ```
 
@@ -27,9 +27,6 @@ FLUXMQ_CONFIG=../examples/no-cluster.yaml \
 ```bash
 docker run --rm \
   -p 1883:1883 \
-  -p 1884:1884 \
-  -p 8083:8083 \
-  -p 8080:8080 \
   -p 5672:5672 \
   -p 5682:5682 \
   -p 8081:8081 \
@@ -39,9 +36,8 @@ docker run --rm \
   --config /etc/fluxmq/config.yaml
 ```
 
-The default Docker config uses dedicated TCP listeners:
-- `1883/tcp`: MQTT v3 (`server.tcp.v3`)
-- `1884/tcp`: MQTT v5 (`server.tcp.v5`)
+The default Docker config uses one `1883/tcp` listener that auto-detects MQTT
+3.1.1 and MQTT 5.0.
 
 ## Next Steps
 

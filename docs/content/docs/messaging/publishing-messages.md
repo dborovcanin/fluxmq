@@ -21,7 +21,9 @@ mosquitto_pub -p 1883 -t "sensors/last" -m "22.5" -r
 
 ## HTTP Publish (Bridge)
 
-Enable the HTTP bridge by setting `server.http.plain.addr` in your config. The `/publish` endpoint accepts JSON with `topic`, `payload`, `qos`, and `retain`.
+Enable the experimental HTTP bridge with `experimental.http.enabled: true` and
+an entry under `experimental.http.listeners`. The `/publish` endpoint accepts
+JSON with `topic`, `payload`, `qos`, and `retain`.
 
 Note: `payload` is a base64-encoded string in JSON.
 

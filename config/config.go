@@ -25,18 +25,20 @@ const (
 	listenerNamePlain = "plain"
 	raftGroupDefault  = "default"
 
-	listenerNameTLS      = "tls"
-	listenerNameMTLS     = "mtls"
-	listenerNameLocal    = "local"
-	listenerNameInternal = "internal"
-	listenerNameService  = "service"
+	listenerNameTLS   = "tls"
+	listenerNameMTLS  = "mtls"
+	listenerNameLocal = "local"
 
 	protocolMQTT    = "mqtt"
 	protocolAMQP    = "amqp"
 	protocolAMQP091 = "amqp091"
+	protocolHTTP    = "http"
+	protocolCoAP    = "coap"
 
 	defaultTCPV3Addr = ":1883"
 	defaultTCPV5Addr = ":1884"
+	defaultWSV3Addr  = ":8083"
+	defaultAMQP091   = ":5682"
 	defaultWSPath    = "/mqtt"
 	defaultNodeID    = "broker-1"
 
@@ -45,11 +47,14 @@ const (
 	logLevelWarn  = "warn"
 	logLevelError = "error"
 
+	storageTypeMemory = "memory"
 	storageTypeBadger = "badger"
 
-	writePolicyForward = "forward"
-	writePolicyLocal   = "local"
-	queueModeSync      = "sync"
+	writePolicyForward        = "forward"
+	writePolicyLocal          = "local"
+	distributionModeReplicate = "replicate"
+	queueModeSync             = "sync"
+	yamlNullTag               = "!!null"
 
 	authURLField               = "url"
 	authTransportField         = "transport"
@@ -62,18 +67,26 @@ const (
 
 // Config holds all configuration for the MQTT broker.
 type Config struct {
-	Server       ServerConfig       `yaml:"server"`
-	Broker       BrokerConfig       `yaml:"broker"`
-	Session      SessionConfig      `yaml:"session"`
-	Log          LogConfig          `yaml:"log"`
-	Storage      StorageConfig      `yaml:"storage"`
-	Cluster      ClusterConfig      `yaml:"cluster"`
-	Webhook      WebhookConfig      `yaml:"webhook"`
-	RateLimit    RateLimitConfig    `yaml:"ratelimit"`
-	QueueManager QueueManagerConfig `yaml:"queue_manager"`
-	Queues       []QueueConfig      `yaml:"queues"`
-	Auth         AuthConfig         `yaml:"auth"`
-	Hooks        HooksConfig        `yaml:"hooks"`
+	Version      int                `yaml:"-"`
+	Listeners    ListenersConfig    `yaml:"-"`
+	Admin        AdminConfig        `yaml:"-"`
+	Health       HealthConfig       `yaml:"-"`
+	Telemetry    TelemetryConfig    `yaml:"-"`
+	Experimental ExperimentalConfig `yaml:"-"`
+	Development  bool               `yaml:"-"`
+
+	Server       ServerConfig       `yaml:"-"`
+	Broker       BrokerConfig       `yaml:"-"`
+	Session      SessionConfig      `yaml:"-"`
+	Log          LogConfig          `yaml:"-"`
+	Storage      StorageConfig      `yaml:"-"`
+	Cluster      ClusterConfig      `yaml:"-"`
+	Webhook      WebhookConfig      `yaml:"-"`
+	RateLimit    RateLimitConfig    `yaml:"-"`
+	QueueManager QueueManagerConfig `yaml:"-"`
+	Queues       []QueueConfig      `yaml:"-"`
+	Auth         AuthConfig         `yaml:"-"`
+	Hooks        HooksConfig        `yaml:"-"`
 }
 
 // AuthConfig configures external callouts and broker-local principals.
@@ -374,7 +387,7 @@ func validateLocalPrincipalYAML(node *yaml.Node, path string) error {
 }
 
 func validateYAMLMapping(node *yaml.Node, path string, fields map[string]func(*yaml.Node) error) error {
-	if node.Tag == "!!null" {
+	if node.Tag == yamlNullTag {
 		return nil
 	}
 	if node.Kind != yaml.MappingNode {
@@ -396,7 +409,7 @@ func validateYAMLMapping(node *yaml.Node, path string, fields map[string]func(*y
 }
 
 func validateYAMLSequence(node *yaml.Node, path string, validate func(*yaml.Node, string) error) error {
-	if node.Tag == "!!null" {
+	if node.Tag == yamlNullTag {
 		return nil
 	}
 	if node.Kind != yaml.SequenceNode {
@@ -434,7 +447,7 @@ type HooksConfig struct {
 
 // knownAuthProtocols is the set of valid protocol names for auth config.
 var knownAuthProtocols = map[string]bool{
-	protocolMQTT: true, protocolAMQP: true, protocolAMQP091: true, "http": true, "coap": true,
+	protocolMQTT: true, protocolAMQP: true, protocolAMQP091: true, protocolHTTP: true, protocolCoAP: true,
 }
 
 var knownBlockingHooks = map[string]bool{
@@ -699,44 +712,16 @@ type AMQP091Config struct {
 	MTLS  AMQP091ListenerConfig `yaml:"mtls"`
 	// Local admits principals declared in auth.local_principals over mTLS. It
 	// confers no capability of its own: what a principal may do comes from its
-	// role. Configure more than one only to place them on separate networks.
+	// role.
 	Local AMQP091ListenerConfig `yaml:"local"`
-	// Internal and Service are deprecated aliases for Local, kept so existing
-	// configurations keep working. They behave identically to it and to each
-	// other; new configurations should use Local.
-	Internal AMQP091ListenerConfig `yaml:"internal"`
-	Service  AMQP091ListenerConfig `yaml:"service"`
 }
 
-// LocalListeners returns every configured local-principal listener with the
-// configuration key that named it, so callers do not have to know which of the
-// deprecated aliases an operator used.
+// LocalListeners returns the configured local-principal listener, if any.
 func (c AMQP091Config) LocalListeners() []NamedAMQP091Listener {
-	candidates := []NamedAMQP091Listener{
-		{Name: listenerNameLocal, Config: c.Local},
-		{Name: listenerNameInternal, Config: c.Internal},
-		{Name: listenerNameService, Config: c.Service},
+	if !hasAddr(c.Local.Addr) {
+		return nil
 	}
-	listeners := make([]NamedAMQP091Listener, 0, len(candidates))
-	for _, candidate := range candidates {
-		if hasAddr(candidate.Config.Addr) {
-			listeners = append(listeners, candidate)
-		}
-	}
-	return listeners
-}
-
-// DeprecatedLocalListenerNames returns the deprecated keys an operator used, so
-// startup can name them in a warning.
-func (c AMQP091Config) DeprecatedLocalListenerNames() []string {
-	var names []string
-	if hasAddr(c.Internal.Addr) {
-		names = append(names, listenerNameInternal)
-	}
-	if hasAddr(c.Service.Addr) {
-		names = append(names, listenerNameService)
-	}
-	return names
+	return []NamedAMQP091Listener{{Name: listenerNameLocal, Config: c.Local}}
 }
 
 // NamedAMQP091Listener pairs a listener with the configuration key that named it.
@@ -851,6 +836,9 @@ type LogConfig struct {
 // StorageConfig holds storage backend configuration.
 type StorageConfig struct {
 	Type string `yaml:"type"` // memory, badger
+	// DataDir is the v1 storage root. BadgerDir remains the normalized broker
+	// database directory consumed by the storage implementation.
+	DataDir string `yaml:"-"`
 
 	// BadgerDB settings
 	BadgerDir  string `yaml:"badger_dir"`
@@ -864,8 +852,13 @@ type StorageConfig struct {
 
 // ClusterConfig holds clustering configuration.
 type ClusterConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	NodeID  string `yaml:"node_id"`
+	Enabled             bool               `yaml:"enabled"`
+	NodeID              string             `yaml:"node_id"`
+	Members             map[string]string  `yaml:"-"`
+	Ports               ClusterPortsConfig `yaml:"-"`
+	TLS                 ClusterTLSConfig   `yaml:"-"`
+	AllowInsecure       bool               `yaml:"-"`
+	ManifestFingerprint string             `yaml:"-"`
 
 	// Embedded etcd settings
 	Etcd EtcdConfig `yaml:"etcd"`
@@ -927,7 +920,8 @@ type RaftGroupConfig struct {
 // EtcdConfig holds embedded etcd configuration.
 type EtcdConfig struct {
 	DataDir        string `yaml:"data_dir"`
-	BindAddr       string `yaml:"bind_addr"`       // Peer address (e.g., "0.0.0.0:2380")
+	BindAddr       string `yaml:"bind_addr"` // Peer address (e.g., "0.0.0.0:2380")
+	AdvertiseAddr  string `yaml:"-"`
 	ClientAddr     string `yaml:"client_addr"`     // Client address (e.g., "0.0.0.0:2379")
 	InitialCluster string `yaml:"initial_cluster"` // "node1=http://host1:2380,node2=http://host2:2380"
 	Bootstrap      bool   `yaml:"bootstrap"`       // true only for first node
@@ -1011,7 +1005,7 @@ type WebhookEndpoint struct {
 }
 
 // Default returns a configuration with sensible defaults.
-func Default() *Config {
+func defaultRuntime() *Config {
 	return &Config{
 		Server: ServerConfig{
 			TCP: TCPConfig{
@@ -1044,7 +1038,7 @@ func Default() *Config {
 			},
 			WebSocket: WebSocketConfig{
 				V3: WSListenerConfig{
-					Addr:           ":8083",
+					Addr:           defaultWSV3Addr,
 					Path:           defaultWSPath,
 					Protocol:       ProtocolModeV3,
 					MaxConnections: 10000,
@@ -1098,7 +1092,7 @@ func Default() *Config {
 			},
 			AMQP091: AMQP091Config{
 				Plain: AMQP091ListenerConfig{
-					Addr:           ":5682",
+					Addr:           defaultAMQP091,
 					MaxConnections: 10000,
 				},
 				TLS: AMQP091ListenerConfig{
@@ -1107,9 +1101,7 @@ func Default() *Config {
 				MTLS: AMQP091ListenerConfig{
 					MaxConnections: 10000,
 				},
-				Local:    AMQP091ListenerConfig{},
-				Internal: AMQP091ListenerConfig{},
-				Service:  AMQP091ListenerConfig{},
+				Local: AMQP091ListenerConfig{},
 			},
 			HealthAddr:      ":8081",
 			HealthEnabled:   true,
@@ -1179,7 +1171,7 @@ func Default() *Config {
 				MinInSyncReplicas:   2,
 				AckTimeout:          5 * time.Second,
 				WritePolicy:         writePolicyForward,
-				DistributionMode:    "replicate",
+				DistributionMode:    distributionModeReplicate,
 				BindAddr:            "127.0.0.1:7100",
 				DataDir:             "/tmp/fluxmq/raft",
 				Peers:               map[string]string{},
@@ -1264,80 +1256,20 @@ func Default() *Config {
 	}
 }
 
-// Load loads configuration from a YAML file.
-// If the file doesn't exist, returns default configuration.
+// Load loads a strict v1 configuration. Node identity, when needed, is read
+// from FLUXMQ_NODE_ID. Use LoadWithOptions when a CLI node ID must take
+// precedence over the environment.
 func Load(filename string) (*Config, error) {
-	if filename == "" {
-		return Default(), nil
-	}
-
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return Default(), nil
-		}
-		return nil, fmt.Errorf("failed to read config file: %w", err)
-	}
-
-	cfg := Default()
-	if err := rejectLegacyAuthKeys(data); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %w", err)
-	}
-
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %w", err)
-	}
-
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid configuration: %w", err)
-	}
-
-	return cfg, nil
-}
-
-var legacyAuthKeys = map[string]string{
-	authURLField:               "auth.external.url",
-	authTransportField:         "auth.external.transport",
-	authTimeoutField:           "auth.external.timeout",
-	authProtocolsField:         "auth.external.protocols",
-	authIdentityCacheSizeField: "auth.external.identity_cache_size",
-	authIdentityCacheTTLField:  "auth.external.identity_cache_ttl",
-}
-
-func rejectLegacyAuthKeys(data []byte) error {
-	var document yaml.Node
-	if err := yaml.Unmarshal(data, &document); err != nil {
-		return err
-	}
-	if len(document.Content) == 0 {
-		return nil
-	}
-
-	root := document.Content[0]
-	if root.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		if root.Content[i].Value != "auth" {
-			continue
-		}
-		auth := root.Content[i+1]
-		if auth.Kind != yaml.MappingNode {
-			return nil
-		}
-		for j := 0; j+1 < len(auth.Content); j += 2 {
-			key := auth.Content[j].Value
-			if replacement, ok := legacyAuthKeys[key]; ok {
-				return fmt.Errorf("auth.%s is no longer supported; use %s", key, replacement)
-			}
-		}
-		return nil
-	}
-	return nil
+	return LoadWithOptions(filename, LoadOptions{})
 }
 
 // Validate checks if the configuration is valid.
 func (c *Config) Validate() error {
+	if c.Version == VersionV1 {
+		if err := validateNormalizedRuntime(c); err != nil {
+			return err
+		}
+	}
 	tcpSlots := []struct {
 		name              string
 		cfg               TCPListenerConfig
@@ -1541,8 +1473,6 @@ func (c *Config) Validate() error {
 		{name: listenerNameTLS, cfg: c.Server.AMQP091.TLS, requireClientAuth: false},
 		{name: listenerNameMTLS, cfg: c.Server.AMQP091.MTLS, requireClientAuth: true},
 		{name: listenerNameLocal, cfg: c.Server.AMQP091.Local, requireClientAuth: true, requireExactClientAuth: true},
-		{name: listenerNameInternal, cfg: c.Server.AMQP091.Internal, requireClientAuth: true, requireExactClientAuth: true},
-		{name: listenerNameService, cfg: c.Server.AMQP091.Service, requireClientAuth: true, requireExactClientAuth: true},
 	}
 
 	for _, slot := range amqp091Slots {
@@ -1671,7 +1601,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("log.format must be one of: text, json")
 	}
 
-	validStorage := map[string]bool{"memory": true, storageTypeBadger: true}
+	validStorage := map[string]bool{storageTypeMemory: true, storageTypeBadger: true}
 	if !validStorage[c.Storage.Type] {
 		return fmt.Errorf("storage.type must be one of: memory, badger")
 	}
@@ -1739,7 +1669,7 @@ func (c *Config) Validate() error {
 		}
 		if c.Cluster.Raft.DistributionMode != "" {
 			switch strings.ToLower(c.Cluster.Raft.DistributionMode) {
-			case writePolicyForward, "replicate":
+			case writePolicyForward, distributionModeReplicate:
 			default:
 				return fmt.Errorf("cluster.raft.distribution_mode must be one of: forward, replicate")
 			}
@@ -1857,6 +1787,9 @@ func (c *Config) Validate() error {
 	}
 
 	// Queue validation
+	if c.Version == VersionV1 && c.Experimental.QueueRaft.Enabled && !c.Cluster.Enabled {
+		return fmt.Errorf("experimental.queue_raft requires cluster.members")
+	}
 	seenQueues := make(map[string]bool)
 	for i, q := range c.Queues {
 		if q.Name == "" {
@@ -1880,6 +1813,9 @@ func (c *Config) Validate() error {
 			}
 		}
 		if q.Replication.Enabled {
+			if c.Version == VersionV1 && !c.Experimental.QueueRaft.Enabled {
+				return fmt.Errorf("queues[%d].replication requires experimental.queue_raft.enabled: true", i)
+			}
 			if q.Replication.Group != "" && strings.TrimSpace(q.Replication.Group) == "" {
 				return fmt.Errorf("queues[%d].replication.group cannot be only whitespace", i)
 			}
@@ -2134,7 +2070,7 @@ func hasAddr(addr string) bool {
 
 // Save writes the configuration to a YAML file.
 func (c *Config) Save(filename string) error {
-	data, err := yaml.Marshal(c)
+	data, err := marshalV1(c)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}

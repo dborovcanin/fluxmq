@@ -39,15 +39,21 @@ func TestHandleReloadNoManager(t *testing.T) {
 
 func TestHandleReloadSuccess(t *testing.T) {
 	dir := t.TempDir()
-	yamlContent := `log:
-  level: debug
-`
 	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(yamlContent), 0o644); err != nil {
+	baseline := config.Default()
+	if err := baseline.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := *cfg
+	desired.Log.Level = "debug"
+	if err := desired.Save(path); err != nil {
 		t.Fatal(err)
 	}
 
-	cfg := config.Default()
 	rm := reload.New(path, cfg,
 		reload.WithLogSetup(func(_ config.LogConfig) {}),
 	)
@@ -58,7 +64,7 @@ func TestHandleReloadSuccess(t *testing.T) {
 	s.handleReload(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rec.Code)
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	var result reload.ReloadResult
@@ -75,8 +81,9 @@ func TestHandleReloadSuccess(t *testing.T) {
 
 func TestHandleReloadInvalidConfig(t *testing.T) {
 	dir := t.TempDir()
-	yamlContent := `broker:
-  max_message_size: 100
+	yamlContent := `version: 1
+listeners:
+  mqtt: invalid
 `
 	path := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(path, []byte(yamlContent), 0o644); err != nil {

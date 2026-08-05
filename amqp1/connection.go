@@ -67,6 +67,11 @@ func (c *Connection) SetIdleTimeout(d time.Duration) {
 	c.idleTimeout = d
 }
 
+// ClearDeadline removes the server's pre-Open handshake deadline.
+func (c *Connection) ClearDeadline() error {
+	return c.conn.SetDeadline(time.Time{})
+}
+
 // ReadProtocolHeader reads and validates the 8-byte AMQP protocol header.
 func (c *Connection) ReadProtocolHeader() (byte, error) {
 	if c.idleTimeout > 0 {

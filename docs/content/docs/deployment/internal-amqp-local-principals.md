@@ -89,28 +89,29 @@ All external-callout settings move below `auth.external`. Local identities are
 declared separately in `auth.local_principals`:
 
 ```yaml
-server:
+version: 1
+listeners:
+  mqtt: []
+  amqp1: []
   amqp091:
     # Existing public/remote listener. It uses auth.external and blocking hooks.
-    tls:
-      addr: ":5681"
+    - address: ":5681"
+      auth: external
       max_connections: 10000
-      cert_file: "/run/secrets/fluxmq_server_cert"
-      key_file: "/run/secrets/fluxmq_server_key"
-      min_version: "TLS1.2"
+      tls:
+        cert_file: "/run/secrets/fluxmq_server_cert"
+        key_file: "/run/secrets/fluxmq_server_key"
+        min_version: "1.2"
 
     # Private listener. Never expose it through a public load balancer.
-    local:
-      addr: ":5683"
+    - address: ":5683"
+      auth: local
       max_connections: 32
-      cert_file: "/run/secrets/fluxmq_server_cert"
-      key_file: "/run/secrets/fluxmq_server_key"
-      ca_file: "/run/secrets/local_client_ca"
-      client_auth: "require"
-      min_version: "TLS1.2"
-
-cluster:
-  enabled: false
+      tls:
+        cert_file: "/run/secrets/fluxmq_server_cert"
+        key_file: "/run/secrets/fluxmq_server_key"
+        client_ca_file: "/run/secrets/local_client_ca"
+        min_version: "1.2"
 
 auth:
   external:
@@ -224,11 +225,10 @@ barrier before FluxMQ can ACK the publication.
 An exact publish permission therefore cannot run on a clustered node: its
 publication is appended and synced on the receiving node only and is never
 forwarded. FluxMQ rejects any local-principal listener combined with
-`cluster.enabled` when a principal holds an exact target. Prefix-only
+cluster mode (the presence of `cluster.members`) when a principal holds an exact target. Prefix-only
 principals remain valid in a cluster because those publications use ordinary
 topic routing and no queue durability barrier. The audit publisher uses the exact form, and
-`cluster.enabled` defaults to true, so its deployment must set it to false
-explicitly, as the shipped `config-local-principal.yaml` does.
+the shipped `config-local-principal.yaml` therefore omits `cluster`.
 
 The `audit-publisher` may open connections and channels, enable publisher
 confirms, and publish only to the default exchange with the exact routing key
@@ -321,7 +321,7 @@ process restart.
 
 ## Implemented behavior
 
-- Bind a dedicated `server.amqp091.local` mTLS listener on port `5683`.
+- Bind a dedicated `listeners.amqp091` entry with `auth: local` on port `5683`.
 - Pass listener-scoped authentication, authorization, and hook policies into
   AMQP connections instead of selecting them from broker-global state.
 - Keep remote AMQP on `auth.external`; do not add a local lookup to that path.

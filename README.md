@@ -192,11 +192,11 @@ The simplest way to run the broker is using Docker Compose file with default con
 docker compose -f deployments/docker/compose.yaml up -d
 ```
 
-To run with the config from `examples/no-cluster.yaml`,
-execute the following from the repo root so the file path resolves.
+To run the production single-node example through Compose, execute the
+following from the repo root so the file path resolves.
 
 ```bash
-FLUXMQ_CONFIG=../examples/no-cluster.yaml \
+FLUXMQ_CONFIG=../examples/production.yaml \
   docker compose -f deployments/docker/compose.yaml up -d
 ```
 
@@ -204,13 +204,13 @@ To run locally, use:
 
 ```bash
 make build
-./build/fluxmq --config examples/no-cluster.yaml
+./build/fluxmq --config examples/config.yaml
 ```
 
-Defaults in `examples/no-cluster.yaml`:
-- MQTT TCP: `:1883`
-- AMQP 0.9.1: `:5682`
-- Data dir: `/tmp/fluxmq/data`
+The minimal example starts one loopback MQTT listener on `127.0.0.1:1883`
+with MQTT 3.1.1/5.0 auto-detection and in-memory storage. Running
+`./build/fluxmq` without `--config` provides the same safe development mode and
+prints a warning; naming a missing configuration file is an error.
 
 ## Docker build
 

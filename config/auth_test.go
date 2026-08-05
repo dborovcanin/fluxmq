@@ -27,12 +27,22 @@ const (
 	testBadPattern    = "is not a valid queue pattern"
 )
 
+const testV1Prefix = `version: 1
+listeners:
+  mqtt:
+    - address: "127.0.0.1:1883"
+      transport: tcp
+      versions: ["3.1.1", "5.0"]
+  amqp091: []
+  amqp1: []
+`
+
 func TestLoadNestedAuth(t *testing.T) {
 	dir := t.TempDir()
 	current := writeSecret(t, dir, "current", strings.Repeat("a", 32)+"\n")
 	previous := writeSecret(t, dir, "previous", strings.Repeat("b", 32)+"\r\n")
 	filename := filepath.Join(dir, "config.yaml")
-	contents := fmt.Sprintf(`
+	contents := testV1Prefix + fmt.Sprintf(`
 auth:
   external:
     url: "http://auth.internal:8181"
@@ -83,19 +93,15 @@ auth:
 }
 
 func TestLoadRejectsLegacyAuthKeys(t *testing.T) {
-	tests := map[string]string{
-		authURLField:               "auth.external.url",
-		authTransportField:         "auth.external.transport",
-		authTimeoutField:           "auth.external.timeout",
-		authProtocolsField:         "auth.external.protocols",
-		authIdentityCacheSizeField: "auth.external.identity_cache_size",
-		authIdentityCacheTTLField:  "auth.external.identity_cache_ttl",
+	tests := []string{
+		authURLField, authTransportField, authTimeoutField, authProtocolsField,
+		authIdentityCacheSizeField, authIdentityCacheTTLField,
 	}
 
-	for key, replacement := range tests {
+	for _, key := range tests {
 		t.Run(key, func(t *testing.T) {
 			filename := filepath.Join(t.TempDir(), "config.yaml")
-			contents := fmt.Sprintf("auth:\n  %s: value\n", key)
+			contents := testV1Prefix + fmt.Sprintf("auth:\n  %s: value\n", key)
 			if err := os.WriteFile(filename, []byte(contents), 0o600); err != nil {
 				t.Fatalf("write config: %v", err)
 			}
@@ -104,7 +110,7 @@ func TestLoadRejectsLegacyAuthKeys(t *testing.T) {
 			if err == nil {
 				t.Fatal("Load() succeeded with a legacy auth key")
 			}
-			want := fmt.Sprintf("auth.%s is no longer supported; use %s", key, replacement)
+			want := fmt.Sprintf("auth.%s: unknown field", key)
 			if !strings.Contains(err.Error(), want) {
 				t.Fatalf("Load() error = %q, want it to contain %q", err, want)
 			}
@@ -114,12 +120,12 @@ func TestLoadRejectsLegacyAuthKeys(t *testing.T) {
 
 func TestLoadRejectsUnknownAuthFields(t *testing.T) {
 	filename := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(filename, []byte("auth:\n  external:\n    unsupported: true\n"), 0o600); err != nil {
+	if err := os.WriteFile(filename, []byte(testV1Prefix+"auth:\n  external:\n    unsupported: true\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
 	_, err := Load(filename)
-	if err == nil || !strings.Contains(err.Error(), "field unsupported not found") {
+	if err == nil || !strings.Contains(err.Error(), "auth.external.unsupported: unknown field") {
 		t.Fatalf("Load() error = %v, want strict unknown-field error", err)
 	}
 }
@@ -443,7 +449,7 @@ func TestValidateLocalPrincipals(t *testing.T) {
 	}
 }
 
-func TestValidateInternalAMQP091Listener(t *testing.T) {
+func TestValidateLocalAMQP091ListenerSecurity(t *testing.T) {
 	tests := []struct {
 		name           string
 		configure      func(*AMQP091ListenerConfig)
@@ -460,7 +466,7 @@ func TestValidateInternalAMQP091Listener(t *testing.T) {
 				listener.Addr = testInternalAddr
 				listener.MaxConnections = 32
 			},
-			wantError: "server.amqp091.internal.cert_file required",
+			wantError: "server.amqp091.local.cert_file required",
 		},
 		{
 			name: "requires client CA",
@@ -470,7 +476,7 @@ func TestValidateInternalAMQP091Listener(t *testing.T) {
 				listener.TLS.CertFile = testServerCert
 				listener.TLS.KeyFile = testServerKey
 			},
-			wantError: "server.amqp091.internal.ca_file required",
+			wantError: "server.amqp091.local.ca_file required",
 		},
 		{
 			name: "requires exact client auth mode",
@@ -482,7 +488,7 @@ func TestValidateInternalAMQP091Listener(t *testing.T) {
 				listener.TLS.ClientCAFile = testClientCA
 				listener.TLS.ClientAuth = "require-and-verify"
 			},
-			wantError: "server.amqp091.internal.client_auth must be \"require\"",
+			wantError: "server.amqp091.local.client_auth must be \"require\"",
 		},
 		{
 			name: "requires a positive connection limit",
@@ -493,7 +499,7 @@ func TestValidateInternalAMQP091Listener(t *testing.T) {
 				listener.TLS.ClientCAFile = testClientCA
 				listener.TLS.ClientAuth = clientAuthRequire
 			},
-			wantError: "server.amqp091.internal.max_connections must be positive",
+			wantError: "server.amqp091.local.max_connections must be positive",
 		},
 		{
 			name: "requires a local principal",
@@ -540,8 +546,8 @@ func TestValidateInternalAMQP091Listener(t *testing.T) {
 			// configure clustering explicitly rather than inheriting the
 			// clustered default.
 			cfg.Cluster.Enabled = tt.clusterEnabled
-			tt.configure(&cfg.Server.AMQP091.Internal)
-			if (tt.wantError == "" || tt.clusterEnabled) && cfg.Server.AMQP091.Internal.Addr != "" {
+			tt.configure(&cfg.Server.AMQP091.Local)
+			if (tt.wantError == "" || tt.clusterEnabled) && cfg.Server.AMQP091.Local.Addr != "" {
 				cfg.Auth.LocalPrincipals = []LocalPrincipalConfig{{
 					Name:              testPrincipalName,
 					CertificateURISAN: testPrincipalSAN,
@@ -565,17 +571,11 @@ func TestValidateInternalAMQP091Listener(t *testing.T) {
 	}
 }
 
-// The service listener authenticates against the same principal store and
-// publishes through the same single-node durable path as the internal one, so
-// it carries the same deployment requirements.
-// local is the current key; internal and service are deprecated aliases that
-// must stay exactly equivalent, or an operator migrating between them would get
-// a different security posture from the same file.
+// The local listener authenticates against the local principal store and uses
+// the single-node durable path for exact publish targets.
 func TestValidateLocalAMQP091Listeners(t *testing.T) {
 	keys := map[string]func(*Config) *AMQP091ListenerConfig{
-		listenerNameLocal:    func(c *Config) *AMQP091ListenerConfig { return &c.Server.AMQP091.Local },
-		listenerNameInternal: func(c *Config) *AMQP091ListenerConfig { return &c.Server.AMQP091.Internal },
-		listenerNameService:  func(c *Config) *AMQP091ListenerConfig { return &c.Server.AMQP091.Service },
+		listenerNameLocal: func(c *Config) *AMQP091ListenerConfig { return &c.Server.AMQP091.Local },
 	}
 
 	configureValid := func(listener *AMQP091ListenerConfig) {
@@ -652,25 +652,6 @@ func TestValidateLocalAMQP091Listeners(t *testing.T) {
 	}
 }
 
-// The keys name listeners, not capabilities, so configuring several is a
-// network-placement choice and every one of them must be served.
-func TestLocalListenersEnumeratesEveryKey(t *testing.T) {
-	cfg := Default()
-	cfg.Server.AMQP091.Local.Addr = ":5683"
-	cfg.Server.AMQP091.Internal.Addr = ":5684"
-	cfg.Server.AMQP091.Service.Addr = ":5685"
-
-	listeners := cfg.Server.AMQP091.LocalListeners()
-	names := make([]string, 0, len(listeners))
-	for _, listener := range listeners {
-		names = append(names, listener.Name)
-	}
-	assert.Equal(t, []string{listenerNameLocal, listenerNameInternal, listenerNameService}, names)
-
-	assert.Equal(t, []string{listenerNameInternal, listenerNameService}, cfg.Server.AMQP091.DeprecatedLocalListenerNames(),
-		"only the aliases are reported for the deprecation warning")
-}
-
 func TestLocalListenersOmitsUnconfiguredKeys(t *testing.T) {
 	cfg := Default()
 	cfg.Server.AMQP091.Local.Addr = ":5683"
@@ -678,7 +659,6 @@ func TestLocalListenersOmitsUnconfiguredKeys(t *testing.T) {
 	listeners := cfg.Server.AMQP091.LocalListeners()
 	require.Len(t, listeners, 1)
 	assert.Equal(t, listenerNameLocal, listeners[0].Name)
-	assert.Empty(t, cfg.Server.AMQP091.DeprecatedLocalListenerNames())
 }
 
 func runLocalListenerCase(
@@ -742,7 +722,7 @@ func TestLoadAcceptsPublishPermissionFields(t *testing.T) {
 			require.NoError(t, os.WriteFile(secret, []byte(strings.Repeat("a", 32)), 0o600))
 
 			filename := filepath.Join(dir, "config.yaml")
-			body := "auth:\n" +
+			body := testV1Prefix + "auth:\n" +
 				"  local_principals:\n" +
 				"    - name: \"svc\"\n" +
 				"      certificate_uri_san: \"spiffe://absmach/svc\"\n" +

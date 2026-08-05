@@ -7,7 +7,8 @@ description: Connect with MQTT over WebSocket
 
 **Last Updated:** 2026-02-05
 
-FluxMQ supports MQTT over WebSocket. Configure the listener under `server.websocket.*`.
+FluxMQ supports MQTT over WebSocket. Add an entry under `listeners.mqtt` with
+`transport: websocket`.
 
 ## Default Path
 

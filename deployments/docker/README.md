@@ -17,10 +17,6 @@ Run from the repo root so the config path resolves.
 ```bash
 docker run --rm \
   -p 1883:1883 \
-  -p 1884:1884 \
-  -p 8083:8083 \
-  -p 8084:8084 \
-  -p 8080:8080 \
   -p 8082:8082 \
   -p 5672:5672 \
   -p 5682:5682 \
@@ -53,8 +49,8 @@ FLUXMQ_NODE_URLS=http://my-broker:8082
 
 `compose.local-principal.yaml` is a production-shaped overlay for an audit event
 publisher. It keeps remote AMQP over TLS on port `5682`, enables an mTLS-only
-local listener on container port `5683`, explicitly disables FluxMQ's
-otherwise-default MQTT, WebSocket, and AMQP 1.0 listeners, mounts local
+local listener on container port `5683`, declares empty MQTT and AMQP 1.0
+listener lists, mounts local
 credentials as Docker secrets, and pre-provisions the `audit.events` stream.
 
 The overlay requires Docker Compose 2.24.4 or newer because it uses
@@ -112,7 +108,7 @@ Attach the publishing service to the Compose project's `local-internal` network 
 `fluxmq:5683`; the server certificate must be valid for the name the service's AMQP
 client verifies. Do not attach public services to that network. If the subnet
 conflicts with your environment, change the Compose subnet, FluxMQ static
-address, and `server.amqp091.local.addr` together.
+address and `listeners.amqp091[1].address` together.
 
 The local listener requires all three credentials:
 
@@ -131,36 +127,31 @@ for rotation, validation, rollout requirements, and the complete manual
 
 ## 3-Node Cluster
 
-See `deployments/cluster/` directory for cluster configs. Both local and Docker
-use the same config files (`deployments/cluster/config/node{1,2,3}.yaml`).
+See `deployments/cluster/`. Every broker mounts the same
+`config/cluster.yaml`; only its `--node-id` differs.
 
 ### Cluster port map
 
 | Service      | Node 1 | Node 2 | Node 3 |
 |--------------|--------|--------|--------|
-| MQTT v3      | 1883   | 1885   | 1887   |
-| MQTT v5      | 1884   | 1886   | 1888   |
-| WS v3        | 8883   | 8885   | 8887   |
-| WS v5        | 8884   | 8886   | 8888   |
-| HTTP         | 8090   | 8091   | 8092   |
+| MQTT 3.1.1/5.0 | 1883 | 1884   | 1885   |
 | Admin API    | 9081   | 9082   | 9083   |
 | AMQP 1.0     | 5672   | 5673   | 5674   |
 | AMQP 0.9.1   | 5682   | 5683   | 5684   |
 | Health       | 8081   | 8082   | 8083   |
-| etcd peer    | 2380   | 2381   | 2382   |
-| etcd client  | 2379   | 2389   | 2399   |
-| gRPC transport | 7948 | 7949   | 7950   |
+| etcd peer (internal) | 2380 | 2380 | 2380 |
+| broker transport (internal) | 7948 | 7948 | 7948 |
 
-Cluster configs use dedicated TCP and WebSocket listeners per protocol (`server.tcp.v3`/`server.tcp.v5` and `server.websocket.v3`/`server.websocket.v5`).
+The Compose stack uses bridge networking, identical internal ports, separate
+persistent volumes, and one shared mTLS identity for etcd peer and broker
+transport traffic.
 
 ```bash
-# Local processes
+# Docker bridge cluster
 make cluster-up
 make cluster-down
-make clean-data   # optional: remove /tmp/fluxmq data
 
-# Docker (host networking)
+# Equivalent explicit targets
 make docker-cluster-up
 make docker-cluster-down
-make clean-data   # optional: remove /tmp/fluxmq data
 ```

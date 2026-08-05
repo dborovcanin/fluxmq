@@ -17,8 +17,8 @@ Production readiness is workload-dependent. Use the benchmark suites in `benchma
 
 ## Practical Tuning Levers
 
-- `max_connections` on every listener you expose (`server.tcp.*`, `server.websocket.*`, `server.amqp*`): protect the broker from excess concurrent connections. Counted on accepted sockets, so a peer that connects without completing a handshake still consumes quota
-- `read_timeout` and `write_timeout` on `server.tcp.*` and `server.websocket.*`: evict peers that stall before a session starts, or that stop reading afterwards. Both default to `60s`; leaving them at `0` removes the bound
+- `max_connections` on every entry in `listeners.*`: protect the broker from excess concurrent connections. Counted on accepted sockets, so a peer that connects without completing a handshake still consumes quota
+- `read_timeout` and `write_timeout` on MQTT listener entries: evict peers that stall before a session starts, or that stop reading afterwards. Both default to `60s`
 - `session.max_sessions`: cap active MQTT sessions
 - `broker.max_message_size`: limit payload size, and with it the memory a peer can make the broker buffer before it is authenticated
 - `session.max_offline_queue_size` and `session.max_inflight_messages`: control per-client memory usage
@@ -48,13 +48,14 @@ Production readiness is workload-dependent. Use the benchmark suites in `benchma
 
 ## Security Basics
 
-- Prefer TLS/mTLS listeners in `server.*.tls` and `server.*.mtls`.
+- Prefer listener `tls` mappings; add `client_ca_file` for mTLS.
 - If you enable inter-broker transport TLS, configure `cluster.transport.tls_*`.
 - Use `ratelimit.*` to protect against connection and message floods.
 
 ## Observability
 
-- Enable OpenTelemetry metrics via `server.metrics_enabled` and `server.metrics_addr`.
-- Consider enabling traces only for debugging (`server.otel_traces_enabled`).
+- Enable OpenTelemetry metrics via `telemetry.enabled`,
+  `telemetry.metrics_enabled`, and `telemetry.endpoint`.
+- Consider enabling traces only for debugging (`telemetry.traces_enabled`).
 
 For configuration details, see [Configuration reference](/reference/configuration-reference).

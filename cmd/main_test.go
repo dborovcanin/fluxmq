@@ -26,6 +26,7 @@ import (
 
 const (
 	testLocalPrincipal = "audit-publisher"
+	testConfigFile     = "broker.yaml"
 	testLocalSAN       = "spiffe://example.org/audit-publisher"
 	testLocalSecret    = "0123456789abcdef0123456789abcdef"
 	testNextSecret     = "abcdef0123456789abcdef0123456789"
@@ -51,6 +52,33 @@ func TestReleaseShutdownResourcesInDependencyOrder(t *testing.T) {
 
 	if got, want := strings.Join(calls, ","), "cluster,queue-store,broker-store"; got != want {
 		t.Fatalf("shutdown order = %q, want %q", got, want)
+	}
+}
+
+func TestParseCommandOptions(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		want      commandOptions
+		wantError bool
+	}{
+		{name: "development startup", want: commandOptions{}},
+		{name: "startup overrides", args: []string{"--config", testConfigFile, "--node-id", "node1"}, want: commandOptions{configFile: testConfigFile, nodeID: "node1"}},
+		{name: validateCommand, args: []string{configCommand, validateCommand, "--config", testConfigFile, "--node-id", "node2"}, want: commandOptions{configFile: testConfigFile, nodeID: "node2", validate: true}},
+		{name: "validate requires file", args: []string{configCommand, validateCommand}, wantError: true},
+		{name: "unknown argument", args: []string{"serve"}, wantError: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := parseCommandOptions(test.args)
+			if (err != nil) != test.wantError {
+				t.Fatalf("parseCommandOptions() error = %v, wantError=%v", err, test.wantError)
+			}
+			if !test.wantError && got != test.want {
+				t.Fatalf("parseCommandOptions() = %+v, want %+v", got, test.want)
+			}
+		})
 	}
 }
 

@@ -152,12 +152,12 @@ func TestDiffRestartRequiredFields(t *testing.T) {
 		},
 		{
 			name:   "storage type",
-			modify: func(cfg *Config) { cfg.Storage.Type = "memory" },
+			modify: func(cfg *Config) { cfg.Storage.Type = "badger" },
 			path:   "Storage.Type",
 		},
 		{
 			name:   "cluster enabled",
-			modify: func(cfg *Config) { cfg.Cluster.Enabled = false },
+			modify: func(cfg *Config) { cfg.Cluster.Enabled = true },
 			path:   "Cluster.Enabled",
 		},
 		{

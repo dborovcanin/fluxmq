@@ -4,13 +4,11 @@ This directory contains example configurations and client applications for the M
 
 ## Configuration Examples
 
-| File                                     | Description                                |
-| ---------------------------------------- | ------------------------------------------ |
-| `config.yaml`                            | Full broker configuration with all options |
-| `no-cluster.yaml`                        | Single-node mode (no clustering)           |
-| `node1.yaml`, `node2.yaml`, `node3.yaml` | 3-node cluster setup                       |
-| `single-node-cluster.yaml`               | Single-node with cluster features enabled  |
-| `tls-server.yaml`                        | TLS/SSL configuration                      |
+| File              | Description                                      |
+| ----------------- | ------------------------------------------------ |
+| `config.yaml`     | Minimal loopback, in-memory development broker    |
+| `production.yaml` | Production single-node stable-core configuration |
+| `cluster.yaml`    | Shared static manifest for every cluster member   |
 
 ## Client Examples
 
@@ -113,9 +111,11 @@ The consumer group is passed via the `x-consumer-group` argument on `basic.consu
 
 #### Running the Example
 
-1. Start the broker:
+1. Start the broker with the Docker configuration, which exposes all three
+   protocol listeners:
+
    ```bash
-   go run ./cmd --config examples/no-cluster.yaml
+   docker compose -f deployments/docker/compose.yaml up -d
    ```
 
 2. Run the queue client:

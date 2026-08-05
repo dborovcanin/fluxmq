@@ -22,11 +22,14 @@ var ErrShutdownTimeout = errors.New("shutdown timeout exceeded")
 
 // Config holds the AMQP server configuration.
 type Config struct {
-	Address         string
-	TLSConfig       *tls.Config
-	Logger          *slog.Logger
-	ShutdownTimeout time.Duration
-	MaxConnections  int
+	Address   string
+	TLSConfig *tls.Config
+	Logger    *slog.Logger
+	// HandshakeTimeout bounds TCP/TLS, SASL, and AMQP Open. The deadline is
+	// cleared by the protocol connection after Open succeeds.
+	HandshakeTimeout time.Duration
+	ShutdownTimeout  time.Duration
+	MaxConnections   int
 }
 
 // Server is a TCP server that accepts AMQP 1.0 connections.
@@ -46,6 +49,9 @@ func New(cfg Config, broker *amqpbroker.Broker) *Server {
 	}
 	if cfg.ShutdownTimeout == 0 {
 		cfg.ShutdownTimeout = 30 * time.Second
+	}
+	if cfg.HandshakeTimeout == 0 {
+		cfg.HandshakeTimeout = 10 * time.Second
 	}
 
 	var connSem chan struct{}
@@ -110,6 +116,12 @@ func (s *Server) runAcceptLoop(ctx, connCtx context.Context, listener net.Listen
 			if !s.tryAcquireSlot(ctx, conn) {
 				continue
 			}
+			if err := conn.SetDeadline(time.Now().Add(s.config.HandshakeTimeout)); err != nil {
+				s.config.Logger.Warn("failed to set AMQP handshake deadline", "remote", conn.RemoteAddr(), "error", err)
+				s.releaseSlot()
+				conn.Close()
+				continue
+			}
 
 			if tcpConn, ok := conn.(*net.TCPConn); ok {
 				tcpConn.SetKeepAlive(true)                   //nolint:errcheck // TCP socket options; fails only on closed connection
@@ -119,7 +131,7 @@ func (s *Server) runAcceptLoop(ctx, connCtx context.Context, listener net.Listen
 
 			// TLS handshake
 			if tlsConn, ok := conn.(*tls.Conn); ok {
-				if err := tlsConn.Handshake(); err != nil {
+				if err := tlsConn.HandshakeContext(ctx); err != nil {
 					s.config.Logger.Error("TLS handshake failed", slog.String("error", err.Error()))
 					s.releaseSlot()
 					conn.Close()

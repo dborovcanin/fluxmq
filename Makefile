@@ -48,14 +48,14 @@ run: build
 # Run with custom config file
 .PHONY: run-config
 run-config: build
-	$(BUILD_DIR)/$(BINARY) -config config.yaml
+	$(BUILD_DIR)/$(BINARY) --config examples/config.yaml
 
 # Run with debug logging (uses default config with debug level override via env)
 .PHONY: run-debug
 run-debug: build
 	MQTT_LOG_LEVEL=debug $(BUILD_DIR)/$(BINARY)
 
-# --- Cluster (local processes) ---
+# --- Cluster (Docker bridge network) ---
 
 .PHONY: cluster-up
 cluster-up:
@@ -259,13 +259,13 @@ perf-compare:
 
 # --- Example configs ---
 
-.PHONY: run-no-cluster
-run-no-cluster: build
-	$(BUILD_DIR)/$(BINARY) -config examples/no-cluster.yaml
-
-.PHONY: run-single-cluster
-run-single-cluster: build
-	$(BUILD_DIR)/$(BINARY) -config examples/single-node-cluster.yaml
+.PHONY: validate-configs
+validate-configs: build
+	$(BUILD_DIR)/$(BINARY) config validate --config examples/config.yaml
+	$(BUILD_DIR)/$(BINARY) config validate --config examples/production.yaml
+	$(BUILD_DIR)/$(BINARY) config validate --config examples/cluster.yaml --node-id node1
+	$(BUILD_DIR)/$(BINARY) config validate --config deployments/docker/config.yaml
+	$(BUILD_DIR)/$(BINARY) config validate --config deployments/cluster/config/cluster.yaml --node-id node1
 
 # --- Cleanup ---
 
@@ -317,17 +317,16 @@ help:
 	@echo ""
 	@echo "Run (single node):"
 	@echo "  run                Build and run with default config"
-	@echo "  run-config         Build and run with config.yaml"
+	@echo "  run-config         Build and run with examples/config.yaml"
 	@echo "  run-debug          Build and run with debug logging"
-	@echo "  run-no-cluster     Run single node without clustering"
-	@echo "  run-single-cluster Run single node with clustering enabled"
+	@echo "  validate-configs   Validate every stable shipped configuration"
 	@echo ""
 	@echo "Cluster (local processes):"
-	@echo "  cluster-up         Build and start 3-node local cluster"
+	@echo "  cluster-up         Start the 3-node Docker bridge cluster"
 	@echo "  cluster-down       Gracefully stop local cluster"
 	@echo ""
 	@echo "Cluster (docker):"
-	@echo "  docker-cluster-up      Start 3-node Docker cluster (host networking)"
+	@echo "  docker-cluster-up      Start 3-node Docker bridge cluster"
 	@echo "  docker-cluster-down    Stop Docker cluster"
 	@echo ""
 	@echo "Tests:"

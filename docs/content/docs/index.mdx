@@ -32,7 +32,7 @@ make build
 ./build/fluxmq
 
 # Run with configuration
-./build/fluxmq --config config.yaml
+./build/fluxmq --config examples/config.yaml
 ```
 
 ### Test with MQTT Client
@@ -48,19 +48,15 @@ mosquitto_pub -p 1883 -t "test/hello" -m "Hello FluxMQ"
 ### Basic Configuration
 
 ```yaml
-server:
-  tcp:
-    v3:
-      addr: ":1883"
-    v5:
-      addr: ":1884"
-  websocket:
-    plain:
-      addr: ":8083"
-      path: "/mqtt"
-  http:
-    plain:
-      addr: ":8080"
+version: 1
+
+listeners:
+  mqtt:
+    - address: ":1883"
+      transport: tcp
+      versions: ["3.1.1", "5.0"]
+  amqp091: []
+  amqp1: []
 
 broker:
   max_message_size: 1048576
@@ -68,7 +64,7 @@ broker:
 
 storage:
   type: badger
-  badger_dir: "./data"
+  data_dir: "./data"
 
 log:
   level: info

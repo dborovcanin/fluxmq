@@ -164,7 +164,7 @@ func diffStructs(old, new reflect.Value, prefix string, result *DiffResult) {
 	t := old.Type()
 	for i := range t.NumField() {
 		field := t.Field(i)
-		if !field.IsExported() {
+		if !field.IsExported() || field.Name == "Development" {
 			continue
 		}
 
@@ -227,7 +227,7 @@ func LeafFieldPaths() []string {
 func collectLeafPaths(t reflect.Type, prefix string, paths *[]string) {
 	for i := range t.NumField() {
 		field := t.Field(i)
-		if !field.IsExported() {
+		if !field.IsExported() || field.Name == "Development" {
 			continue
 		}
 

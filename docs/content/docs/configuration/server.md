@@ -1,75 +1,47 @@
 ---
-title: Server
-description: Configure listeners, WebSocket path, health checks, and OpenTelemetry
+title: Listeners and Control Endpoints
+description: Configure stable protocol listeners, admin, health, and telemetry
 ---
 
-# Server Configuration
+# Listeners and control endpoints
 
-**Last Updated:** 2026-07-29
-
-`server` controls network listeners and telemetry endpoints. Example:
+FluxMQ v1 uses typed listener lists. One MQTT TCP listener can accept MQTT
+3.1.1 and 5.0 by auto-detecting the protocol header:
 
 ```yaml
-server:
-  tcp:
-    v3:
-      addr: ":1883"
-      protocol: "v3"
-    v5:
-      addr: ":1884"
-      protocol: "v5"
-  websocket:
-    plain:
-      addr: ":8083"
-      path: "/mqtt"
-      protocol: "auto" # auto | v3 | v5
-  http:
-    plain:
-      addr: ":8080"
-  amqp:
-    plain:
-      addr: ":5672"
+version: 1
+listeners:
+  mqtt:
+    - address: ":1883"
+      transport: tcp
+      versions: ["3.1.1", "5.0"]
   amqp091:
-    plain:
-      addr: ":5682"
-    local:
-      addr: ":5683"
-      max_connections: 32
-      cert_file: "/run/secrets/fluxmq_server_cert"
-      key_file: "/run/secrets/fluxmq_server_key"
-      ca_file: "/run/secrets/local_client_ca"
-      client_auth: "require"
-
-  health_enabled: true
-  health_addr: ":8081"
-
-  metrics_enabled: false
-  metrics_addr: "localhost:4317"
-
-  otel_metrics_enabled: true
-  otel_traces_enabled: false
-  otel_trace_sample_rate: 0.1
-
-  admin_api_addr: ":8082"
+    - address: ":5682"
+      auth: external
+  amqp1:
+    - address: ":5672"
 ```
 
-## Key Fields
+Limits and timeouts have defaults. Add an optional `tls` mapping for TLS; add
+`client_ca_file` inside it for mTLS. AMQP 0.9.1 local-principal listeners use
+`auth: local` and require mTLS.
 
-- Listener families: `tcp`, `websocket`, `http`, `coap`, `amqp`, `amqp091`.
-- `amqp091.local` is a private mTLS listener reserved for
-  `auth.local_principals`; it never uses external auth or blocking hooks and
-  requires a positive `max_connections` cap. It carries service-to-service
-  traffic from a fixed set of statically configured internal producers, such as
-  audit or event streams — not general client, device, or tenant connections.
-- Listener addresses: `addr` (empty disables the specific listener).
-- MQTT parser mode per listener: TCP `v3`/`v5` listeners are protocol-pinned; WebSocket listeners can use `protocol` (`auto`, `v3`, `v5`).
-- Listener limits/timeouts: `max_connections`, `read_timeout`, `write_timeout`.
-- WebSocket specifics: `path`, `allowed_origins`.
-- Health/observability: `health_enabled`, `health_addr`, `metrics_enabled`, `metrics_addr`.
-- OpenTelemetry identity/tuning: `otel_service_name`, `otel_service_version`, `otel_metrics_enabled`, `otel_traces_enabled`, `otel_trace_sample_rate`.
-- Admin API server: `admin_api_addr` (empty string disables the admin API listener).
-- Graceful shutdown: `shutdown_timeout`.
+Admin, health, telemetry, and shutdown are not listener slots:
 
-## Learn More
+```yaml
+admin:
+  address: "127.0.0.1:8082"
+health:
+  enabled: true
+  address: "127.0.0.1:8081"
+telemetry:
+  enabled: false
+  endpoint: "127.0.0.1:4317"
+shutdown_timeout: 30s
+```
 
-- [Configuration reference](/reference/configuration-reference)
+HTTP and CoAP bridge listeners are experimental and must be configured below
+`experimental.http` or `experimental.coap` with `enabled: true`.
+
+See the [configuration reference](/docs/reference/configuration-reference) for
+all listener fields and defaults.

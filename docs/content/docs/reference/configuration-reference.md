@@ -1,797 +1,180 @@
 ---
 title: Configuration Reference
-description: Comprehensive YAML configuration reference for server, broker, storage, clustering, and operational settings
+description: Strict FluxMQ v1 configuration schema
 ---
 
-# Configuration Reference
+# Configuration reference
 
-**Last Updated:** 2026-08-01
+FluxMQ v1 accepts one strict YAML document. Every file must declare
+`version: 1`; unknown, duplicate, legacy, and misplaced keys are rejected with
+their YAML path.
 
-FluxMQ uses a single YAML configuration file. Start the broker with:
+Validate configuration without starting a broker:
 
-```bash
-./build/fluxmq --config /path/to/config.yaml
+```console
+fluxmq config validate --config /etc/fluxmq/config.yaml
 ```
 
-If `--config` is omitted, defaults are used (see `config.Default()` in `config/config.go`).
+Naming a missing file is an error. Starting without `--config` is different: it
+starts a loopback-only, in-memory development broker and logs a warning.
 
-Looking for a guided walkthrough? See:
-
-- [Server configuration](/configuration/server)
-- [Storage configuration](/configuration/storage)
-- [Cluster configuration](/configuration/clustering)
-- [Security configuration](/configuration/security)
-
-## Configuration Overview
-
-Top-level keys:
-
-- `server`
-- `broker`
-- `session`
-- `queue_manager`
-- `queues`
-- `storage`
-- `cluster`
-- `auth`
-- `hooks`
-- `webhook`
-- `ratelimit`
-- `log`
-
-Durations use Go duration strings like `5s`, `1m`, `24h`.
-
-## Server
-
-`server` controls network listeners and telemetry endpoints.
+## Minimal file
 
 ```yaml
-server:
-  tcp:
-    v3:
-      addr: ":1883"
-      max_connections: 10000
-      read_timeout: "60s"
-      write_timeout: "60s"
-      protocol: "v3"
-    v5:
-      addr: ":1884"
-      max_connections: 10000
-      read_timeout: "60s"
-      write_timeout: "60s"
-      protocol: "v5"
-    tls: {}
-    mtls: {}
+version: 1
 
-  websocket:
-    v3:
-      addr: ":8083"
-      path: "/mqtt"
-      protocol: "v3"
-      max_connections: 10000
-      read_timeout: "60s"
-      write_timeout: "60s"
-      allowed_origins: ["https://app.example.com"]
-    v5:
-      addr: ":8084"
-      path: "/mqtt"
-      protocol: "v5"
-      max_connections: 10000
-      read_timeout: "60s"
-      write_timeout: "60s"
-      allowed_origins: ["https://app.example.com"]
-    tls: {}
-    mtls: {}
+listeners:
+  mqtt:
+    - address: ":1883"
+      transport: tcp
+      versions: ["3.1.1", "5.0"]
+  amqp091: []
+  amqp1: []
 
-  http:
-    plain:
-      addr: ":8080"
-    tls: {}
-    mtls: {}
-
-  coap:
-    plain:
-      addr: ":5685"
-    dtls: {}
-    mdtls: {}
-
-  amqp:
-    plain:
-      addr: ":5672"
-      max_connections: 10000
-    tls: {}
-    mtls: {}
-
-  amqp091:
-    plain:
-      addr: ":5682"
-      max_connections: 10000
-    tls: {}
-    mtls: {}
-    local:
-      addr: ":5683"
-      max_connections: 32
-      cert_file: "/run/secrets/fluxmq_server_cert"
-      key_file: "/run/secrets/fluxmq_server_key"
-      ca_file: "/run/secrets/local_client_ca"
-      client_auth: "require"
-
-  health_enabled: true
-  health_addr: ":8081"
-
-  metrics_enabled: false
-  metrics_addr: "localhost:4317" # OTLP endpoint
-
-  otel_service_name: "fluxmq"
-  otel_service_version: "1.0.0"
-  otel_metrics_enabled: true
-  otel_traces_enabled: false
-  otel_trace_sample_rate: 0.1
-
-  admin_api_addr: ":8082" # Admin API (HTTP + Connect/gRPC queue service); empty disables
-
-  shutdown_timeout: "30s"
+storage:
+  type: badger
+  data_dir: /var/lib/fluxmq
 ```
 
-### Listener Fields
+## Stable listeners
 
-These apply to listener blocks (for example `server.tcp.v3`, `server.websocket.v3`, `server.amqp091.tls`, and so on). `server.amqp091.local` is reserved for `auth.local_principals`, requires mTLS, and never uses external auth or blocking hooks. `server.amqp091.internal` and `server.amqp091.service` are deprecated aliases for it.
+`listeners.mqtt`, `listeners.amqp091`, and `listeners.amqp1` are lists. Every
+entry has `address`; all limits and timeouts below have normalized defaults.
 
-| Field             | Description                                                                                                                                    |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `addr`            | Listener bind address (`"<host>:<port>"` or `":<port>"`). Empty string disables that listener.                                                 |
-| `max_connections` | Connection cap for that listener (`>= 0`). `0` means no explicit cap except on a local-principal listener, where a positive cap is required. Applies to TCP/WebSocket/AMQP/AMQP091 listeners. Counted on accepted sockets, so a peer that connects without completing a handshake still consumes quota. |
-| `read_timeout`    | Bounds the phase before an MQTT session starts (`time.Duration`, `>= 0`). On TCP that is the TLS handshake, protocol sniff and CONNECT; on WebSocket it also bounds the HTTP request and TLS handshake that precede the upgrade. Once the session starts it sets its own read deadlines from the negotiated keep-alive. TCP and WebSocket listeners. |
-| `write_timeout`   | Bounds a single socket write for the life of the connection (`time.Duration`, `>= 0`). TCP and WebSocket listeners.                            |
-| `protocol`        | MQTT parser mode. For TCP, use `v3` on `server.tcp.v3` and `v5` on `server.tcp.v5`; for WebSocket listeners you can use `auto`, `v3`, or `v5`. |
-| `path`            | HTTP path for MQTT-over-WebSocket endpoint.                                                                                                    |
-| `allowed_origins` | WebSocket origin allow-list. Empty list allows all origins; use explicit origins for production.                                               |
+MQTT entries:
 
-### Server Runtime / Telemetry Fields
+| Key | Values/default |
+| --- | --- |
+| `transport` | Required: `tcp` or `websocket`. |
+| `versions` | Required non-empty subset of `"3.1.1"`, `"5.0"`. Both versions are auto-detected on one listener. |
+| `path` | WebSocket path, default `/mqtt`; invalid for TCP. |
+| `allowed_origins` | WebSocket origin allowlist; invalid for TCP. |
+| `max_connections` | Default `10000`; `0` selects the default. |
+| `read_timeout` | Default `60s`. |
+| `write_timeout` | Default `60s`. |
+| `tls` | Optional TLS mapping described below. |
 
-| Field                    | Default          | Description                                                       |
-| ------------------------ | ---------------- | ----------------------------------------------------------------- |
-| `health_enabled`         | `true`           | Enables `/health` endpoint.                                       |
-| `health_addr`            | `:8081`          | Health endpoint bind address.                                     |
-| `metrics_enabled`        | `false`          | Enables OpenTelemetry exporters.                                  |
-| `metrics_addr`           | `localhost:4317` | OTLP endpoint address (collector target).                         |
-| `otel_service_name`      | `fluxmq`         | Telemetry service name.                                           |
-| `otel_service_version`   | `1.0.0`          | Telemetry service version tag.                                    |
-| `otel_metrics_enabled`   | `true`           | Enables OTel metrics export.                                      |
-| `otel_traces_enabled`    | `false`          | Enables OTel traces export.                                       |
-| `otel_trace_sample_rate` | `0.1`            | Trace sampling ratio in `[0.0, 1.0]`.                             |
-| `admin_api_addr`         | `:8082`          | Admin API bind address. Set empty string to disable the listener. |
-| `shutdown_timeout`       | `30s`            | Graceful server shutdown timeout.                                 |
+AMQP 0.9.1 entries select `auth: external|local`. Local authentication requires
+`tls.client_ca_file` and principals under `auth.local_principals`. AMQP 0.9.1
+and AMQP 1.0 use `max_connections: 10000` and `handshake_timeout: 10s` by
+default.
 
-### TLS / DTLS Settings
+There are no `plain`, `tls`, `mtls`, `local`, `internal`, or `service` slots or
+aliases. Add another list entry when another address or policy is required.
 
-TLS fields are shared across `tls`, `mtls`, `dtls`, and `mdtls` blocks via `pkg/tls` config:
-
-- `cert_file`, `key_file`
-- `ca_file` (client CA), `server_ca_file`
-- `client_auth` (`none`, `request`, `require_any`, `verify_if_given`, `require`)
-- `min_version` (`tls1.0`, `tls1.1`, `tls1.2`, `tls1.3`)
-- `cipher_suites`, `prefer_server_cipher_suites`
-- `ocsp`, `crl` (advanced verification)
-
-## Broker
+### Listener TLS
 
 ```yaml
-broker:
-  max_message_size: 1048576
-  max_retained_messages: 10000
-  retry_interval: "20s"
-  max_retries: 0
-  max_qos: 2
-  async_fan_out: false    # true = send PUBCOMP immediately, fan-out in worker pool
-  fan_out_workers: 0      # worker pool size; 0 = GOMAXPROCS
+tls:
+  cert_file: /run/secrets/server-cert
+  key_file: /run/secrets/server-key
+  client_ca_file: /run/secrets/client-ca # optional; makes this mTLS
+  min_version: "1.2"
+  cipher_suites: []
 ```
 
-| Field                   | Default   | Description                                                                                  |
-| ----------------------- | --------- | -------------------------------------------------------------------------------------------- |
-| `max_message_size`      | `1048576` | Maximum PUBLISH payload size in bytes (`>= 1024`). Also bounds what a peer can make the broker buffer before it is authenticated: an MQTT packet is rejected from its fixed header, and an AMQP 0.9.1 body from its content header, before the payload is read. The packet check allows for the topic name and properties on top of this size, so a payload of exactly `max_message_size` still fits. Restart required. |
-| `max_retained_messages` | `10000`   | Cap on retained messages in the store.                                                       |
-| `retry_interval`        | `20s`     | QoS 1/2 retry interval for unacknowledged outbound messages (`>= 1s`).                       |
-| `max_retries`           | `0`       | Maximum retries before dropping; `0` = unlimited.                                            |
-| `max_qos`               | `2`       | Maximum QoS accepted from publishers (`0`, `1`, or `2`). A publisher that exceeds it is disconnected — MQTT 5 with reason code `0x9B` (QoS not supported), MQTT 3.1.1 by closing the connection — rather than having its QoS silently downgraded, which would leave its PUBLISH unacknowledged. Each connection is held to the maximum advertised in its CONNACK; see [Hot Reload](/configuration/hot-reload). |
-| `async_fan_out`         | `false`   | When `true`, sends PUBCOMP immediately after PUBREL and dispatches fan-out to a worker pool. |
-| `fan_out_workers`       | `0`       | Async fan-out worker count; `0` = `GOMAXPROCS`.                                              |
+`cert_file` and `key_file` are mandatory when `tls` is present. Adding
+`client_ca_file` requires and verifies a client certificate.
 
-### Fan-out Modes
+## Control plane and telemetry
 
-- `async_fan_out: false` (default): publisher acknowledgment and subscriber fan-out stay coupled.
-- `async_fan_out: true`: publisher PUBCOMP is sent earlier; subscriber fan-out runs in background workers.
-- `fan_out_workers`: tune worker pool size for high fan-out workloads.
-
-## Session
+Admin, health, and telemetry are independent top-level sections:
 
 ```yaml
-session:
-  max_sessions: 10000
-  default_expiry_interval: 300
-  max_offline_queue_size: 1000
-  max_inflight_messages: 256
-  max_send_queue_size: 0         # 0 = synchronous writes, >0 = async buffered sends
-  disconnect_on_full: false      # when async queue is full: false=block, true=disconnect client
-  offline_queue_policy: "evict" # evict or reject
-  inflight_overflow: 0           # 0 = backpressure, 1 = pending queue
-  pending_queue_size: 1000       # per-subscriber buffer depth when inflight_overflow=1
+admin:
+  address: "127.0.0.1:8082"
+
+health:
+  enabled: true
+  address: "127.0.0.1:8081"
+
+telemetry:
+  enabled: false
+  endpoint: "127.0.0.1:4317"
+  service_name: fluxmq
+  service_version: "1.0.0"
+  metrics_enabled: true
+  traces_enabled: false
+  trace_sample_rate: 0.1
+  insecure: false
+  ca_file: ""
+  cert_file: ""
+  key_file: ""
+
+shutdown_timeout: 30s
 ```
-
-| Field                     | Default | Description                                                                               |
-| ------------------------- | ------- | ----------------------------------------------------------------------------------------- |
-| `max_sessions`            | `10000` | Maximum concurrent sessions (`>= 1`).                                                     |
-| `default_expiry_interval` | `300`   | Session expiry interval in seconds when client does not set one.                          |
-| `max_offline_queue_size`  | `1000`  | Maximum QoS 1/2 messages buffered for a disconnected client (`>= 10`).                    |
-| `max_inflight_messages`   | `256`   | Per-session inflight window size (unacknowledged outbound messages).                      |
-| `max_send_queue_size`     | `0`     | Per-connection async send queue depth. `0` = synchronous writes.                          |
-| `disconnect_on_full`      | `false` | Async send queue full behavior: `false` = block/backpressure, `true` = disconnect client. |
-| `offline_queue_policy`    | `evict` | `evict` drops oldest when full; `reject` drops newest incoming message.                   |
-| `inflight_overflow`       | `0`     | Inflight full behavior: `0` = backpressure; `1` = per-subscriber pending queue.           |
-| `pending_queue_size`      | `1000`  | Pending queue depth when `inflight_overflow=1` (must be `>= 1`).                          |
-
-### Inflight Overflow
-
-- `inflight_overflow: 0` (backpressure): delivery waits for ACK window to free.
-- `inflight_overflow: 1` (pending queue): overflow is buffered per subscriber and drained as ACKs arrive.
-
-## Queue Manager
-
-```yaml
-queue_manager:
-  auto_commit_interval: "5s"
-  capture_workers: 4
-  capture_queue_depth: 1024
-  capture_drain_timeout: "5s"
-```
-
-| Field                   | Default | Description                                                                 |
-| ----------------------- | ------- | --------------------------------------------------------------------------- |
-| `auto_commit_interval`  | `5s`    | Stream-group auto-commit cadence. `0` means commit on every delivery batch. |
-| `capture_workers`       | `4`     | Lanes writing captured publishes off the publish path. A queue is always handled by the same lane, so its appends keep publish order. Lanes are shared: queues are hashed onto them, so a stalled queue also stalls the unrelated queues sharing its lane until its backlog fills. Raise this where many queues bind ordinary topics and one may block. `0` selects the default. |
-| `capture_queue_depth`   | `1024`  | Per-lane backlog, counted in **jobs, not bytes**. The memory ceiling is `capture_workers × capture_queue_depth` payloads, so lower it when capturing large messages. When a lane fills, the newest job is dropped and counted in `queues.capture_dropped`. `0` selects the default. |
-| `capture_drain_timeout` | `5s`    | How long shutdown waits for queued captures to be written. Anything still queued is counted in `queues.capture_dropped` rather than delaying shutdown. If a worker is still inside an append when it expires, shutdown is reported unclean and the cluster, queue log store and broker store are all left open, since the worker may still be using them — on `badger` that means the broker store is not flushed and the next start replays. Raise this if that becomes routine. `0` selects the default. |
-
-Capture never blocks the publish path: see [Capturing Ordinary Topics](/messaging/durable-queues#capturing-ordinary-topics).
-
-## Queues
-
-Queue configuration controls durable queues and stream queues.
-
-```yaml
-queues:
-  - name: "mqtt"
-    topics: ["$queue/#"]
-    reserved: true
-    type: "classic"               # classic or stream
-    primary_group: ""             # stream status reporting
-
-    retention:
-      max_age: "0s"               # 0 = unlimited
-      max_length_bytes: 0          # 0 = unlimited
-      max_length_messages: 0       # 0 = unlimited
-
-    limits:
-      max_message_size: 10485760
-      max_depth: 100000
-      message_ttl: "168h"
-
-    retry:
-      max_retries: 10
-      initial_backoff: "5s"
-      max_backoff: "5m"
-      multiplier: 2.0
-
-    dlq:
-      enabled: true
-      topic: ""                    # optional override
-
-    replication:
-      enabled: false
-      group: ""
-      replication_factor: 3
-      mode: "sync"                 # sync or async
-      min_in_sync_replicas: 2
-      ack_timeout: "5s"
-      heartbeat_timeout: "0s"      # 0 = inherit group/default
-      election_timeout: "0s"       # 0 = inherit group/default
-      snapshot_interval: "0s"      # 0 = inherit group/default
-      snapshot_threshold: 0         # 0 = inherit group/default
-```
-
-### Queue Fields
-
-| Field           | Description                                                                |
-| --------------- | -------------------------------------------------------------------------- |
-| `name`          | Unique queue name.                                                         |
-| `topics`        | Topic filters routed into this queue (must be non-empty). MQTT wildcards: `+` matches one level, `#` matches zero or more and must be the final level. A `#` placed anywhere else is not a valid filter and matches nothing — see the note below. Patterns are matched against every publish, not only `$queue/` addresses. |
-| `reserved`      | Marks system-managed/builtin queue definitions.                            |
-| `type`          | Queue mode: `classic` or `stream`. Empty value falls back to default mode. |
-| `primary_group` | For stream queues: consumer group used for status reporting.               |
-
-Queue patterns are validated wherever a queue is created. A malformed filter — a
-`#` that is not the final level, a wildcard sharing a level with other characters
-— can never match, and would leave the queue silently receiving nothing, so it is
-refused:
-
-- in this file, as a startup error naming the queue, the filter and its position;
-- through the admin API, as a rejected create or update.
-
-A queue **already persisted** with such a filter is not refused, because the data
-is on disk and startup is not where it can be fixed. It is reported at startup
-instead, naming the queue and the filter, and the queue keeps working through
-whichever of its filters are valid.
-
-Refusing these can turn a configuration that previously started into one that does
-not, and that is deliberate. Earlier releases matched a misplaced `#` against
-*every* topic, since the matcher returned a match on seeing one regardless of
-position, so a queue bound to `#/events` was capturing all traffic on the broker
-rather than the events it named. Fix the filter rather than work around the error.
-
-### `queues[].retention`
-
-| Field                 | Description                                              |
-| --------------------- | -------------------------------------------------------- |
-| `max_age`             | Time retention limit. `0s` disables age-based retention. |
-| `max_length_bytes`    | Byte-size retention cap. `0` means unlimited.            |
-| `max_length_messages` | Message-count retention cap. `0` means unlimited.        |
-
-### `queues[].limits`
-
-| Field              | Description                                                                                                                |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `max_message_size` | Queue-level max payload size in bytes.                                                                                     |
-| `max_depth`        | Max queued message count.                                                                                                  |
-| `message_ttl`      | Per-message TTL. Messages older than this are skipped at delivery time. `0` disables per-message expiry (default: `168h`). |
-
-### `queues[].retry`
-
-| Field             | Description                                |
-| ----------------- | ------------------------------------------ |
-| `max_retries`     | Max delivery retries per message (`>= 0`). |
-| `initial_backoff` | Initial retry delay.                       |
-| `max_backoff`     | Maximum retry delay.                       |
-| `multiplier`      | Exponential backoff multiplier (`>= 1.0`). |
-
-### `queues[].dlq`
-
-| Field     | Description                                                      |
-| --------- | ---------------------------------------------------------------- |
-| `enabled` | Enables dead-letter queue routing for exhausted messages.        |
-| `topic`   | Optional DLQ topic override; empty uses generated/default topic. |
-
-### `queues[].replication`
-
-| Field                  | Description                                                                       |
-| ---------------------- | --------------------------------------------------------------------------------- |
-| `enabled`              | Enables per-queue Raft replication.                                               |
-| `group`                | Raft group ID for this queue. Empty means `default`.                              |
-| `replication_factor`   | Number of replicas (`1..10` when enabled).                                        |
-| `mode`                 | `sync` or `async`.                                                                |
-| `min_in_sync_replicas` | Minimum replicas required to ACK (`1..replication_factor`).                       |
-| `ack_timeout`          | Timeout for sync replication acknowledgments (`> 0`).                             |
-| `heartbeat_timeout`    | Optional per-queue heartbeat override. `0` inherits cluster/group value.          |
-| `election_timeout`     | Optional per-queue election timeout override. `0` inherits cluster/group value.   |
-| `snapshot_interval`    | Optional per-queue snapshot interval override. `0` inherits cluster/group value.  |
-| `snapshot_threshold`   | Optional per-queue snapshot threshold override. `0` inherits cluster/group value. |
 
 ## Storage
 
 ```yaml
 storage:
-  type: "badger"      # memory or badger
-  badger_dir: "/tmp/fluxmq/data"
-  sync_writes: false
+  type: badger       # memory | badger
+  data_dir: /var/lib/fluxmq
+  sync_writes: true
   recover_on_startup: false
 ```
 
-| Field                | Default            | Description                                                                                                            |
-| -------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `type`               | `badger`           | Storage backend: `memory` or `badger`.                                                                                 |
-| `badger_dir`         | `/tmp/fluxmq/data` | Data directory for Badger backend (required when `type=badger`).                                                       |
-| `sync_writes`        | `false`            | If `true`, fsync-like durability on write path; if `false`, better throughput.                                         |
-| `recover_on_startup` | `false`            | Run segment recovery before loading queues: truncate each corrupted segment at its last valid batch, sync, and rebuild indexes. See the note below on startup behaviour when this is `false`. |
+`data_dir` is required for Badger and for cluster mode. FluxMQ derives internal
+broker, cluster, and experimental queue-Raft paths below it.
 
-A corrupted segment fails startup when `recover_on_startup` is `false`. The
-scan position becomes the next append offset, so continuing past damage would
-overwrite or write beyond it — turning a detectable problem into unrecoverable
-data loss. Discarding data is deliberate, so it is left to this setting. On a
-startup failure naming a corrupted segment, take a backup of the data directory,
-then enable `recover_on_startup` to truncate the damaged tail. Records in the
-discarded bytes are lost; the log reports the bytes truncated and the records
-that survived.
+## Static cluster
 
-## Cluster
-
-Clustering combines:
-
-- **Embedded etcd** (`cluster.etcd`): metadata coordination (session ownership, subscriptions, queue consumers, retained/will metadata).
-- **gRPC transport** (`cluster.transport`): cross-node routing (publishes, queue messages, session takeover, hybrid payload fetch), including delivery to local MQTT, AMQP 1.0, and AMQP 0.9.1 clients.
-- **Optional Raft** (`cluster.raft`): replicates durable queue operations.
-
-For a “how it works” deep dive, see [Clustering internals](/architecture/clustering).
+The presence of a non-empty `cluster.members` enables clustering. Every node
+uses the same file:
 
 ```yaml
 cluster:
-  enabled: true
-  node_id: "broker-1"
+  members:
+    node1: node1.internal
+    node2: node2.internal
+    node3: node3.internal
+  ports:
+    etcd_peer: 2380
+    transport: 7948
+  tls:
+    ca_file: /run/secrets/cluster-ca
+    cert_file: /run/secrets/cluster-cert
+    key_file: /run/secrets/cluster-key
+```
 
-  etcd:
-    data_dir: "/tmp/fluxmq/etcd"
-    bind_addr: "0.0.0.0:2380"
-    client_addr: "0.0.0.0:2379"
-    initial_cluster: "broker-1=http://0.0.0.0:2380"
-    bootstrap: true
-    hybrid_retained_size_threshold: 1024
+Select the process-local member with `--node-id`; if omitted,
+`FLUXMQ_NODE_ID` is used. The flag takes precedence, and the selected ID must
+exist in `members`.
 
-  transport:
-    bind_addr: "0.0.0.0:7948"
-    peers: {}
-    route_batch_max_size: 256
-    route_batch_max_delay: "5ms"
-    route_batch_flush_workers: 4
-    route_publish_timeout: "15s"
-    tls_enabled: false
-    tls_cert_file: ""
-    tls_key_file: ""
-    tls_ca_file: ""
+The broker derives embedded-etcd membership and advertised peer URLs, broker
+transport peers, and local data paths. The embedded-etcd client endpoint is
+loopback-only. The one cluster identity provides mTLS for embedded-etcd peer and
+broker transport traffic. Plaintext requires the explicit development override
+`cluster.allow_insecure: true`.
 
-  raft:
+Membership is static for v1. Changing the member map against existing data
+fails startup. Transport batching and retained-payload thresholds are internal
+and not configurable.
+
+## Experimental features
+
+HTTP and CoAP bridges live only behind explicit gates:
+
+```yaml
+experimental:
+  http:
+    enabled: true
+    listeners:
+      - address: ":8080"
+  coap:
     enabled: false
-    auto_provision_groups: true
-    replication_factor: 3
-    sync_mode: true
-    min_in_sync_replicas: 2
-    ack_timeout: "5s"
-    write_policy: "forward"        # local, reject, forward
-    distribution_mode: "replicate" # forward, replicate
-    bind_addr: "127.0.0.1:7100"
-    data_dir: "/tmp/fluxmq/raft"
-    peers: {}
-    heartbeat_timeout: "1s"
-    election_timeout: "3s"
-    snapshot_interval: "5m"
-    snapshot_threshold: 8192
-
-    groups:
-      default:
-        bind_addr: "127.0.0.1:7100"
-        data_dir: "/tmp/fluxmq/raft"
-        peers: {}
-      hot:
-        bind_addr: "127.0.0.1:7200"
-        data_dir: "/tmp/fluxmq/raft/groups/hot"
-        peers: {}
+    listeners: []
 ```
 
-### Cluster Root Fields
+Queue Raft lives under `experimental.queue_raft`; it is disabled by default,
+derives peers from `cluster.members`, and is outside the v1 compatibility
+contract. Queue replication settings are rejected unless this gate is enabled.
 
-| Field     | Default    | Description                                                          |
-| --------- | ---------- | -------------------------------------------------------------------- |
-| `enabled` | `true`     | Enables clustering features. Use `false` for standalone deployments. |
-| `node_id` | `broker-1` | Unique node identifier in the cluster.                               |
+## Unchanged sections
 
-### `cluster.etcd`
+The `auth`, `hooks`, `webhook`, `queue_manager`, `queues`, `ratelimit`, `session`,
+`broker`, and `log` sections retain their existing field structure, but they are
+now decoded strictly like the rest of the document.
 
-| Field                            | Description                                                                   |
-| -------------------------------- | ----------------------------------------------------------------------------- |
-| `data_dir`                       | Local etcd data directory.                                                    |
-| `bind_addr`                      | etcd peer address (`:2380`) for member replication.                           |
-| `client_addr`                    | etcd client address (`:2379`) used by broker components.                      |
-| `initial_cluster`                | Comma-separated cluster map (`name=http://host:2380,...`).                    |
-| `bootstrap`                      | `true` when bootstrapping new cluster; `false` when joining existing cluster. |
-| `hybrid_retained_size_threshold` | Payload size threshold for retained/will hybrid storage strategy.             |
-
-### `cluster.transport`
-
-| Field                       | Default        | Description                                                   |
-| --------------------------- | -------------- | ------------------------------------------------------------- |
-| `bind_addr`                 | `0.0.0.0:7948` | Inter-node gRPC transport bind address.                       |
-| `peers`                     | `{}`           | Map of `node_id -> transport address`.                        |
-| `route_batch_max_size`      | `256`          | Flush batch after this many queued messages (`>= 0`).         |
-| `route_batch_max_delay`     | `5ms`          | Flush partial batch after this delay (`>= 0`).                |
-| `route_batch_flush_workers` | `4`            | Concurrent flush workers per remote node (`>= 0`).            |
-| `route_publish_timeout`     | `15s`          | Max time for cross-node publish operation (`0` uses default). |
-| `tls_enabled`               | `false`        | Enables mTLS/TLS for transport gRPC channel.                  |
-| `tls_cert_file`             | `""`           | Required when `tls_enabled=true`.                             |
-| `tls_key_file`              | `""`           | Required when `tls_enabled=true`.                             |
-| `tls_ca_file`               | `""`           | Required when `tls_enabled=true`.                             |
-
-### `cluster.raft`
-
-| Field                   | Default            | Description                                                                   |
-| ----------------------- | ------------------ | ----------------------------------------------------------------------------- |
-| `enabled`               | `false`            | Enables queue Raft replication engine.                                        |
-| `auto_provision_groups` | `true`             | Allows dynamic creation of queue-referenced groups not listed under `groups`. |
-| `replication_factor`    | `3`                | Target replica count (`1..10` when enabled).                                  |
-| `sync_mode`             | `true`             | `true` waits for apply/commit path; `false` returns earlier (async path).     |
-| `min_in_sync_replicas`  | `2`                | Minimum in-sync replicas required for sync behavior.                          |
-| `ack_timeout`           | `5s`               | Timeout for sync commit/apply acknowledgments.                                |
-| `write_policy`          | `forward`          | Follower write behavior: `local`, `reject`, `forward`.                        |
-| `distribution_mode`     | `replicate`        | Cross-node delivery strategy: `forward` or `replicate`.                       |
-| `bind_addr`             | `127.0.0.1:7100`   | Base Raft bind address for default group runtime.                             |
-| `data_dir`              | `/tmp/fluxmq/raft` | Base Raft data directory.                                                     |
-| `peers`                 | `{}`               | Map of `node_id -> raft address`.                                             |
-| `heartbeat_timeout`     | `1s`               | Raft heartbeat interval/tick.                                                 |
-| `election_timeout`      | `3s`               | Raft election timeout.                                                        |
-| `snapshot_interval`     | `5m`               | Snapshot interval.                                                            |
-| `snapshot_threshold`    | `8192`             | Snapshot threshold in log entries.                                            |
-| `groups`                | `{}`               | Optional per-group overrides (`default`, `hot`, etc.).                        |
-
-### `cluster.raft.groups.<group_id>`
-
-| Field                  | Description                                                                           |
-| ---------------------- | ------------------------------------------------------------------------------------- |
-| `enabled`              | Optional group enable switch. If omitted, inherits enabled behavior.                  |
-| `bind_addr`            | Group-specific Raft bind address (required for non-default groups).                   |
-| `data_dir`             | Group-specific data directory.                                                        |
-| `peers`                | Group-specific peer map (`node_id -> raft address`; required for non-default groups). |
-| `replication_factor`   | Optional override for this group. `0` inherits base value.                            |
-| `sync_mode`            | Optional per-group sync-mode override.                                                |
-| `min_in_sync_replicas` | Optional per-group ISR override. `0` inherits base value.                             |
-| `ack_timeout`          | Optional per-group ack timeout override. `0` inherits base value.                     |
-| `heartbeat_timeout`    | Optional per-group heartbeat override. `0` inherits base value.                       |
-| `election_timeout`     | Optional per-group election timeout override. `0` inherits base value.                |
-| `snapshot_interval`    | Optional per-group snapshot interval override. `0` inherits base value.               |
-| `snapshot_threshold`   | Optional per-group snapshot threshold override. `0` inherits base value.              |
-
-### Transport Batching
-
-The gRPC transport batches outbound messages per remote node before flushing them over the wire.
-
-| Setting                     | Default | Description                                        |
-| --------------------------- | ------- | -------------------------------------------------- |
-| `route_batch_max_size`      | `256`   | Maximum number of messages collected before flush. |
-| `route_batch_max_delay`     | `5ms`   | Maximum wait before flushing partial batch.        |
-| `route_batch_flush_workers` | `4`     | Concurrent flush goroutines per remote node.       |
-| `route_publish_timeout`     | `15s`   | Maximum time for cross-cluster publish completion. |
-
-### Raft Behavior (What The Knobs Mean)
-
-Two fields control most queue behavior tradeoffs:
-
-- `cluster.raft.write_policy`: behavior on follower writes.
-- `cluster.raft.distribution_mode`: how deliveries are routed across nodes.
-
-Other durability and timing fields:
-
-- `sync_mode`, `ack_timeout`
-- `heartbeat_timeout`, `election_timeout`
-- `snapshot_interval`, `snapshot_threshold`
-
-Implementation notes:
-
-- FluxMQ supports multiple Raft replication groups; queues choose group via `queues[].replication.group`.
-- Group membership comes from peer configuration. `replication_factor` and `min_in_sync_replicas` are validated and used by policy logic, but do not replace Raft quorum mechanics.
-
-## Blocking Hooks
-
-```yaml
-hooks:
-  url: "https://hooks.internal:7017"
-  transport: "grpc"       # grpc or http
-  timeout: "500ms"
-  fail_mode: "deny"       # deny or allow
-
-  protocols:
-    mqtt: true
-    http: true
-    coap: false
-    amqp: true
-    amqp091: true
-
-  events:
-    auth_on_register: true
-    auth_on_publish: true
-    auth_on_subscribe: true
-    auth_on_unsubscribe: true
-```
-
-Blocking hooks are synchronous callouts that run before selected broker
-operations continue. They can allow, deny, or return supported mutations such
-as a normalized topic/filter, publish payload, MQTT subscribe QoS, retained
-flag, properties, or an MQTT register external identity.
-
-| Field       | Default | Description                                                                                                           |
-| ----------- | ------- | --------------------------------------------------------------------------------------------------------------------- |
-| `url`       | `""`    | Hook service base URL. Empty disables blocking hooks.                                                                 |
-| `transport` | `grpc`  | Wire format for callout: `grpc` or `http`. HTTP sends `POST {url}/hooks`.                                             |
-| `timeout`   | `0`     | Per-call timeout. Zero uses the hook client default (`500ms`).                                                        |
-| `fail_mode` | `deny`  | Error behavior for hook timeouts/invalid responses: `deny` rejects the operation, `allow` keeps the original request. |
-| `protocols` | `{}`    | Per-protocol hook toggle. Empty map = all protocols run hooks when `url` is set.                                      |
-| `events`    | `{}`    | Per-hook event toggle. Empty map = all supported blocking hooks run when `url` is set.                                |
-
-Valid `protocols` keys: `mqtt`, `amqp`, `amqp091`, `http`, `coap`.
-
-Valid `events` keys: `auth_on_register`, `auth_on_publish`,
-`auth_on_subscribe`, `auth_on_unsubscribe`.
-
-See [Blocking Hooks](/architecture/hooks) for the request/response schema,
-mutation support, and operational guidance.
-
-## Webhooks
-
-```yaml
-webhook:
-  enabled: false
-  queue_size: 10000
-  drop_policy: "oldest" # oldest or newest
-  workers: 5
-  include_payload: false
-  shutdown_timeout: "30s"
-
-  defaults:
-    timeout: "5s"
-    retry:
-      max_attempts: 3
-      initial_interval: "1s"
-      max_interval: "30s"
-      multiplier: 2.0
-    circuit_breaker:
-      failure_threshold: 5
-      reset_timeout: "60s"
-
-  endpoints:
-    - name: "analytics"
-      type: "http"
-      url: "https://example.com/webhook"
-      events: ["message.published"]
-      topic_filters: ["sensors/#"]
-      headers:
-        Authorization: "Bearer token"
-      timeout: "10s"
-```
-
-Only `http` endpoints are currently supported.
-
-### Webhook Fields
-
-| Field              | Default  | Description                                            |
-| ------------------ | -------- | ------------------------------------------------------ |
-| `enabled`          | `false`  | Enables webhook event delivery.                        |
-| `queue_size`       | `10000`  | In-memory webhook queue depth (`>= 100` when enabled). |
-| `drop_policy`      | `oldest` | Queue full behavior: `oldest` or `newest`.             |
-| `workers`          | `5`      | Concurrent webhook workers (`>= 1`).                   |
-| `include_payload`  | `false`  | Includes message payload in webhook body.              |
-| `shutdown_timeout` | `30s`    | Graceful drain timeout during shutdown.                |
-| `defaults`         | —        | Default delivery settings applied to endpoints.        |
-| `endpoints`        | `[]`     | List of webhook endpoint configs.                      |
-
-### `webhook.defaults`
-
-| Field             | Description               |
-| ----------------- | ------------------------- |
-| `timeout`         | Default endpoint timeout. |
-| `retry`           | Retry policy defaults.    |
-| `circuit_breaker` | Circuit breaker defaults. |
-
-### `webhook.defaults.retry`
-
-| Field              | Description                                |
-| ------------------ | ------------------------------------------ |
-| `max_attempts`     | Max delivery attempts (`>= 1`).            |
-| `initial_interval` | Initial retry delay.                       |
-| `max_interval`     | Max retry delay.                           |
-| `multiplier`       | Exponential backoff multiplier (`>= 1.0`). |
-
-### `webhook.defaults.circuit_breaker`
-
-| Field               | Description                               |
-| ------------------- | ----------------------------------------- |
-| `failure_threshold` | Failures before opening breaker (`>= 1`). |
-| `reset_timeout`     | Time before half-open probe/reset.        |
-
-### `webhook.endpoints[]`
-
-| Field           | Description                                                   |
-| --------------- | ------------------------------------------------------------- |
-| `name`          | Unique endpoint identifier.                                   |
-| `type`          | Endpoint type. Currently only `http` is supported.            |
-| `url`           | Target endpoint URL.                                          |
-| `events`        | Event-type filter. Empty means all events.                    |
-| `topic_filters` | Topic filter list for message events. Empty means all topics. |
-| `headers`       | Static headers attached to webhook requests.                  |
-| `timeout`       | Optional endpoint-specific timeout override.                  |
-| `retry`         | Optional endpoint-specific retry override.                    |
-
-## Rate Limiting
-
-```yaml
-ratelimit:
-  enabled: false
-
-  connection:
-    enabled: true
-    rate: 1.6667           # connections per second per IP
-    burst: 20
-    cleanup_interval: "5m"
-
-  message:
-    enabled: true
-    rate: 1000             # messages per second per client
-    burst: 100
-
-  subscribe:
-    enabled: true
-    rate: 100              # subscriptions per second per client
-    burst: 10
-```
-
-| Field                         | Description                                            |
-| ----------------------------- | ------------------------------------------------------ |
-| `enabled`                     | Global rate-limit feature switch.                      |
-| `connection.enabled`          | Enables per-IP connection rate limiting.               |
-| `connection.rate`             | Allowed connection attempts per second per IP.         |
-| `connection.burst`            | Token-bucket burst allowance for connection limiter.   |
-| `connection.cleanup_interval` | Cleanup interval for stale connection limiter entries. |
-| `message.enabled`             | Enables per-client publish/message limiter.            |
-| `message.rate`                | Allowed messages per second per client.                |
-| `message.burst`               | Token-bucket burst for message limiter.                |
-| `subscribe.enabled`           | Enables per-client subscribe limiter.                  |
-| `subscribe.rate`              | Allowed subscribe operations per second per client.    |
-| `subscribe.burst`             | Token-bucket burst for subscribe limiter.              |
-
-## Auth
-
-```yaml
-auth:
-  external:
-    url: "https://auth-service.internal:7016"
-    transport: "grpc"
-    timeout: 5s
-    protocols:
-      mqtt: true
-      http: true
-      coap: true
-      amqp: true
-      amqp091: true
-    identity_cache_size: 50000
-    identity_cache_ttl: "1h"
-
-  local_principals:
-    - name: "audit-publisher"
-      certificate_uri_san: "spiffe://example.org/audit-publisher"
-      role: "publisher"
-      current_secret_file: "/run/secrets/audit_secret_current"
-      previous_secret_file: "/run/secrets/audit_secret_previous"
-      permissions:
-        publish:
-          - exchange: ""
-            routing_key: "audit.events"
-        subscribe: []
-```
-
-| Field                                           | Default | Description |
-| ----------------------------------------------- | ------- | ----------- |
-| `external.url`                                  | `""`    | External auth service address. Empty disables the callout. |
-| `external.transport`                            | `grpc`  | Callout transport: `grpc` or `http`. |
-| `external.timeout`                              | `0`     | Per-call timeout. Zero uses the transport default. |
-| `external.protocols`                            | `{}`    | External-auth protocol toggle. Empty means every protocol. |
-| `external.identity_cache_size`                  | `0`     | Maximum cached external identities; zero selects the broker default (`10000`), while a negative value disables size eviction. |
-| `external.identity_cache_ttl`                   | `0`     | External identity cache TTL; zero selects the broker default (`24h`), while a negative value disables TTL eviction. |
-| `local_principals[].name`                       | —       | Unique SASL username for the local principal. |
-| `local_principals[].certificate_uri_san`        | —       | Exact URI SAN required on a CA-verified client certificate. |
-| `local_principals[].role`                       | `publisher` | Capability of the principal on every local listener: `publisher` may only publish; `service` may also consume and relay an origin identity. |
-| `local_principals[].current_secret_file`        | —       | File containing an active high-entropy printable value of at least 32 characters, without embedded CR/LF or NUL. One terminal newline is stripped. |
-| `local_principals[].previous_secret_file`       | `""`    | Optional old secret with the same printable-value requirements, accepted during rotation overlap. |
-| `local_principals[].permissions.publish`        | `[]`    | AMQP publish targets. `exchange` must be `""` (the default exchange). Each entry sets exactly one of `routing_key` (exact, and a protected stream under `queues`) or `routing_key_prefix` (a plain string prefix, no queue required). |
-| `local_principals[].permissions.subscribe`      | `[]`    | Queue names the principal may consume, exact or wildcard. Levels are separated by `.`; `*`/`+` match one level and `#` matches zero or more, so `m.*.events` and `m.+.events` are one grant. Entries must name queues, not queue addresses: `m`, not `$queue/m` or `m/+`. Requires `role: service`; declaring entries on a `publisher` is rejected at load. |
-
-Valid `external.protocols` keys: `mqtt`, `amqp`, `amqp091`, `http`, `coap`.
-The old flat `auth.url`, `auth.transport`, `auth.timeout`, `auth.protocols`, and
-cache fields are invalid.
-
-See [Security configuration](/configuration/security) for detailed examples.
-
-## Logging
-
-```yaml
-log:
-  level: "info"   # debug, info, warn, error
-  format: "text"  # text or json
-```
-
-| Field    | Default | Description                                  |
-| -------- | ------- | -------------------------------------------- |
-| `level`  | `info`  | Log level: `debug`, `info`, `warn`, `error`. |
-| `format` | `text`  | Log format: `text` or `json`.                |
+FluxMQ v1 does not provide aliases, pre-v1 compatibility decoding, environment
+interpolation, includes, overlays, or profiles.

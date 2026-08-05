@@ -1,85 +1,50 @@
 ---
-title: Running Cluster
-description: Start a multi-node FluxMQ cluster with embedded etcd and transport peers
+title: Running a Cluster
+description: Run the secure static three-node v1 example
 ---
 
-# Running Cluster
+# Running a cluster
 
-**Last Updated:** 2026-02-25
+FluxMQ v1 uses static membership and one shared YAML manifest. The Docker
+example provides three brokers on a bridge network with identical container
+ports, different `--node-id` values, and separate persistent volumes.
 
-FluxMQ clustering uses embedded etcd for metadata and gRPC transport for routing. The repo includes working 3-node examples.
+Provision a CA and one cluster identity whose certificate is valid for all
+member hostnames, then set:
 
-## Quick Start
-
-The repo includes shared 3-node cluster configs in `deployments/cluster/config/`.
-Both local processes and Docker use the same YAML files.
-
-### Local processes
-
-```bash
-make cluster-up      # build + start 3 nodes, wait for health checks
-make cluster-down    # graceful stop
+```console
+export FLUXMQ_CLUSTER_CA_FILE=/secure/cluster-ca.pem
+export FLUXMQ_CLUSTER_CERT_FILE=/secure/cluster-cert.pem
+export FLUXMQ_CLUSTER_KEY_FILE=/secure/cluster-key.pem
 ```
 
-### Docker (host networking)
+Validate the shared file and render Compose before startup:
 
-```bash
-make docker-cluster-up       # start 3-node Docker cluster, wait for health checks
-make docker-cluster-down     # stop containers
+```console
+./build/fluxmq config validate \
+  --config deployments/cluster/config/cluster.yaml \
+  --node-id node1
+docker compose -f deployments/cluster/docker-compose.yaml config --quiet
 ```
 
-### Manual (per node)
+Start and stop the cluster:
 
-```bash
-make build
-./build/fluxmq -config deployments/cluster/config/node1.yaml &
-./build/fluxmq -config deployments/cluster/config/node2.yaml &
-./build/fluxmq -config deployments/cluster/config/node3.yaml &
+```console
+make docker-cluster-up
+make docker-cluster-down
 ```
 
-## Cluster Port Map
+The same manifest is mounted into every broker. `--node-id` takes precedence
+over `FLUXMQ_NODE_ID` and must name a key in `cluster.members`.
 
-| Service        | Node 1 | Node 2 | Node 3 |
-| -------------- | ------ | ------ | ------ |
-| MQTT v3        | 1883   | 1885   | 1887   |
-| MQTT v5        | 1884   | 1886   | 1888   |
-| WebSocket      | 8883   | 8884   | 8885   |
-| HTTP           | 8090   | 8091   | 8092   |
-| AMQP 1.0       | 5672   | 5673   | 5674   |
-| AMQP 0.9.1     | 5682   | 5683   | 5684   |
-| Health         | 8081   | 8082   | 8083   |
-| etcd peer      | 2380   | 2381   | 2382   |
-| etcd client    | 2379   | 2389   | 2399   |
-| gRPC transport | 7948   | 7949   | 7950   |
+The embedded-etcd peer and broker transport ports are `2380` and `7948` inside
+every container. FluxMQ derives advertised endpoints and peer maps from the
+member hostnames. Its embedded-etcd client endpoint remains on loopback.
 
-Local cluster configs use dedicated listeners on each node:
-- `server.tcp.v3` for MQTT 3.1.1
-- `server.tcp.v5` for MQTT 5.0
+Cluster mTLS is mandatory. `cluster.allow_insecure: true` exists only for
+explicit development use. Membership is static: changing the member map
+against a populated volume fails startup; use the original map or fresh data.
 
-## Key Cluster Settings
-
-- `cluster.enabled`: turn clustering on
-- `cluster.node_id`: unique node identifier
-- `cluster.etcd.*`: embedded etcd configuration
-- `cluster.transport.*`: gRPC transport for routing
-- `cluster.raft.*`: optional queue replication
-
-### Transport Tuning
-
-The transport batches outbound messages per remote node. Relevant knobs:
-
-- `route_batch_max_size` (default `256`): flush threshold in messages.
-- `route_batch_max_delay` (default `5ms`): max wait before flushing a partial batch.
-- `route_batch_flush_workers` (default `4`): concurrent flush goroutines per remote node. Increase for high-latency links; set to `1` for strict ordering.
-
-See the [configuration reference](/reference/configuration-reference#transport-batching) for details.
-
-## Bootstrap Rules
-
-- Set `cluster.etcd.bootstrap: true` only on the first node.
-- Other nodes should set `bootstrap: false` and share the same `initial_cluster` map.
-
-## Learn More
-
-- [Clustering internals](/architecture/clustering)
-- [Configuration reference](/reference/configuration-reference)
+Queue Raft is not part of the stable cluster contract. It remains disabled
+below `experimental.queue_raft` and derives any experimental peers from the
+same member map.

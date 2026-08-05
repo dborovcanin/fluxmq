@@ -1,0 +1,51 @@
+version: 1
+
+listeners:
+  mqtt:
+    - address: ":1883"
+      transport: tcp
+      versions: ["3.1.1", "5.0"]
+  amqp091:
+    - address: ":5682"
+      auth: external
+  amqp1:
+    - address: ":5672"
+
+admin:
+  address: ":8082"
+
+health:
+  enabled: true
+  address: ":8081"
+
+shutdown_timeout: 30s
+
+storage:
+  type: badger
+  data_dir: /var/lib/fluxmq
+  sync_writes: true
+
+cluster:
+  members:
+    node1: node1
+    node2: node2
+    node3: node3
+  ports:
+    etcd_peer: 2380
+    transport: 7948
+  tls:
+    ca_file: /run/secrets/cluster_ca
+    cert_file: /run/secrets/cluster_cert
+    key_file: /run/secrets/cluster_key
+
+queue_manager:
+  auto_commit_interval: 5s
+
+queues:
+  - name: mqtt
+    topics: ["$queue/#"]
+    reserved: true
+
+log:
+  level: info
+  format: json

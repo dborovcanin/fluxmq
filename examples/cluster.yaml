@@ -1,4 +1,5 @@
-# Production single-node stable-core configuration.
+# Shared static manifest for every cluster member. Select the local member with
+# --node-id or FLUXMQ_NODE_ID.
 version: 1
 
 listeners:
@@ -23,6 +24,19 @@ storage:
   type: badger
   data_dir: /var/lib/fluxmq
   sync_writes: true
+
+cluster:
+  members:
+    node1: node1
+    node2: node2
+    node3: node3
+  ports:
+    etcd_peer: 2380
+    transport: 7948
+  tls:
+    ca_file: /run/secrets/cluster_ca
+    cert_file: /run/secrets/cluster_cert
+    key_file: /run/secrets/cluster_key
 
 log:
   level: info

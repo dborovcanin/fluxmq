@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -37,6 +38,7 @@ import (
 	"github.com/absmach/fluxmq/queue"
 	qraft "github.com/absmach/fluxmq/queue/raft"
 	queueStorage "github.com/absmach/fluxmq/queue/storage"
+	queueMemory "github.com/absmach/fluxmq/queue/storage/memory/log"
 	queueTypes "github.com/absmach/fluxmq/queue/types"
 	"github.com/absmach/fluxmq/ratelimit"
 	"github.com/absmach/fluxmq/reload"
@@ -59,9 +61,11 @@ import (
 
 // Listener mode names.
 const (
-	listenerPlain = "plain"
-	listenerTLS   = "tls"
-	listenerMTLS  = "mtls"
+	listenerPlain   = "plain"
+	listenerTLS     = "tls"
+	listenerMTLS    = "mtls"
+	configCommand   = "config"
+	validateCommand = "validate"
 )
 
 func protocolVersionForMode(mode string) int {
@@ -73,6 +77,62 @@ func protocolVersionForMode(mode string) int {
 	default:
 		return core.ProtocolAuto
 	}
+}
+
+func loadListenerTLS(tlsConfig *mqtttls.Config) (*tls.Config, error) {
+	if tlsConfig == nil {
+		return nil, nil
+	}
+	return mqtttls.LoadTLSConfig[*tls.Config](tlsConfig)
+}
+
+func listenerSecurityMode(tlsConfig *mqtttls.Config) string {
+	if tlsConfig == nil {
+		return listenerPlain
+	}
+	if tlsConfig.ClientCAFile != "" {
+		return listenerMTLS
+	}
+	return listenerTLS
+}
+
+type commandOptions struct {
+	configFile string
+	nodeID     string
+	validate   bool
+}
+
+func parseCommandOptions(args []string) (commandOptions, error) {
+	options := commandOptions{}
+	if len(args) >= 2 && args[0] == configCommand && args[1] == validateCommand {
+		flags := flag.NewFlagSet("fluxmq config validate", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		flags.StringVar(&options.configFile, "config", "", "Path to configuration file")
+		flags.StringVar(&options.nodeID, "node-id", "", "Local cluster member ID")
+		if err := flags.Parse(args[2:]); err != nil {
+			return commandOptions{}, err
+		}
+		if flags.NArg() != 0 {
+			return commandOptions{}, fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+		}
+		if options.configFile == "" {
+			return commandOptions{}, fmt.Errorf("--config is required")
+		}
+		options.validate = true
+		return options, nil
+	}
+
+	flags := flag.NewFlagSet("fluxmq", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&options.configFile, "config", "", "Path to configuration file")
+	flags.StringVar(&options.nodeID, "node-id", "", "Local cluster member ID")
+	if err := flags.Parse(args); err != nil {
+		return commandOptions{}, err
+	}
+	if flags.NArg() != 0 {
+		return commandOptions{}, fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	return options, nil
 }
 
 // mqttPacketHeadroom is added to the configured maximum message size to derive
@@ -383,14 +443,22 @@ func releaseShutdownResources(
 }
 
 func main() {
-	configFile := flag.String("config", "", "Path to configuration file")
-	flag.Parse()
+	command, err := parseCommandOptions(os.Args[1:])
+	if err != nil {
+		slog.Error("Invalid command line", "error", err)
+		os.Exit(2)
+	}
 
-	cfg, err := config.Load(*configFile)
+	cfg, err := config.LoadWithOptions(command.configFile, config.LoadOptions{NodeID: command.nodeID})
 	if err != nil {
 		slog.Error("Failed to load configuration", "error", err)
 		os.Exit(1)
 	}
+	if command.validate {
+		fmt.Fprintln(os.Stdout, "configuration valid")
+		return
+	}
+	configFile := command.configFile
 
 	logLevel := slog.LevelInfo
 	switch cfg.Log.Level {
@@ -415,6 +483,9 @@ func main() {
 
 	logger := slog.New(handler).With("local_node_id", nodeID)
 	slog.SetDefault(logger)
+	if cfg.Development {
+		slog.Warn("Development mode: no configuration file supplied; using loopback-only listeners and in-memory storage")
+	}
 
 	localPrincipalStore, err := localauth.New(cfg.Auth.LocalPrincipals)
 	if err != nil {
@@ -425,29 +496,11 @@ func main() {
 
 	slog.Info("Starting MQTT broker", "version", fluxmq.Version)
 	slog.Info("Configuration loaded",
-		"tcp_v3_listener", cfg.Server.TCP.V3.Addr,
-		"tcp_v5_listener", cfg.Server.TCP.V5.Addr,
-		"tcp_tls_listener", cfg.Server.TCP.TLS.Addr,
-		"tcp_mtls_listener", cfg.Server.TCP.MTLS.Addr,
-		"ws_v3_listener", cfg.Server.WebSocket.V3.Addr,
-		"ws_v5_listener", cfg.Server.WebSocket.V5.Addr,
-		"ws_tls_listener", cfg.Server.WebSocket.TLS.Addr,
-		"ws_mtls_listener", cfg.Server.WebSocket.MTLS.Addr,
-		"http_plain_listener", cfg.Server.HTTP.Plain.Addr,
-		"http_tls_listener", cfg.Server.HTTP.TLS.Addr,
-		"http_mtls_listener", cfg.Server.HTTP.MTLS.Addr,
-		"coap_plain_listener", cfg.Server.CoAP.Plain.Addr,
-		"coap_dtls_listener", cfg.Server.CoAP.DTLS.Addr,
-		"coap_mdtls_listener", cfg.Server.CoAP.MDTLS.Addr,
-		"amqp_plain_listener", cfg.Server.AMQP.Plain.Addr,
-		"amqp_tls_listener", cfg.Server.AMQP.TLS.Addr,
-		"amqp_mtls_listener", cfg.Server.AMQP.MTLS.Addr,
-		"amqp091_plain_listener", cfg.Server.AMQP091.Plain.Addr,
-		"amqp091_tls_listener", cfg.Server.AMQP091.TLS.Addr,
-		"amqp091_mtls_listener", cfg.Server.AMQP091.MTLS.Addr,
-		"amqp091_local_listener", cfg.Server.AMQP091.Local.Addr,
-		"amqp091_internal_listener", cfg.Server.AMQP091.Internal.Addr,
-		"amqp091_service_listener", cfg.Server.AMQP091.Service.Addr,
+		"mqtt_listeners", len(cfg.Listeners.MQTT),
+		"amqp091_listeners", len(cfg.Listeners.AMQP091),
+		"amqp1_listeners", len(cfg.Listeners.AMQP1),
+		"experimental_http_listeners", len(cfg.Experimental.HTTP.Listeners),
+		"experimental_coap_listeners", len(cfg.Experimental.CoAP.Listeners),
 		"admin_api_addr", cfg.Server.AdminAPIAddr,
 		"health_enabled", cfg.Server.HealthEnabled,
 		"cluster_enabled", cfg.Cluster.Enabled,
@@ -485,9 +538,11 @@ func main() {
 	// teardown that releases them has to be registered before b.Close, which is
 	// what stops the queue manager they belong to.
 	var (
-		qm            *queue.Manager
-		queueLogStore *logStorage.Adapter
-		stopCluster   func() error
+		qm                 *queue.Manager
+		queueStore         queueStorage.QueueStore
+		consumerGroupStore queueStorage.ConsumerGroupStore
+		closeQueueLogStore func() error
+		stopCluster        func() error
 	)
 	if cfg.Cluster.Enabled {
 		// Build transport TLS config if enabled
@@ -500,12 +555,17 @@ func main() {
 			}
 		}
 
+		if err := cluster.VerifyStaticManifest(cfg.Cluster.Etcd.DataDir, cfg.Cluster.ManifestFingerprint); err != nil {
+			slog.Error("Failed to verify static cluster membership", "error", err)
+			os.Exit(1)
+		}
+
 		etcdCfg := &cluster.EtcdConfig{
 			NodeID:                      cfg.Cluster.NodeID,
 			DataDir:                     cfg.Cluster.Etcd.DataDir,
 			BindAddr:                    cfg.Cluster.Etcd.BindAddr,
 			ClientAddr:                  cfg.Cluster.Etcd.ClientAddr,
-			AdvertiseAddr:               cfg.Cluster.Etcd.BindAddr, // Use bind addr as advertise for now
+			AdvertiseAddr:               cfg.Cluster.Etcd.AdvertiseAddr,
 			InitialCluster:              cfg.Cluster.Etcd.InitialCluster,
 			Bootstrap:                   cfg.Cluster.Etcd.Bootstrap,
 			TransportAddr:               cfg.Cluster.Transport.BindAddr,
@@ -614,10 +674,6 @@ func main() {
 	// the cluster underneath it pulls out the transport its forward is using.
 	// Leaking their dependencies into process exit is the cheaper failure.
 	defer func() {
-		var closeQueueLogStore func() error
-		if queueLogStore != nil {
-			closeQueueLogStore = queueLogStore.Close
-		}
 		shutdownComplete := qm == nil || qm.ShutdownComplete()
 		releaseShutdownResources(
 			shutdownComplete,
@@ -792,7 +848,7 @@ func main() {
 	amqp091Broker.SetRouter(sharedRouter)
 	amqpBroker.SetRouter(sharedRouter)
 
-	// qm and queueLogStore are declared with the deferred teardown above.
+	// qm and its stores are declared with the deferred teardown above.
 	var configuredQueueContracts []queueTypes.QueueConfig
 
 	if metrics != nil {
@@ -805,22 +861,32 @@ func main() {
 		slog.Info("AMQP OTel metrics enabled")
 	}
 
-	// Initialize file-based log storage for queues
+	// Initialize queue storage. Development mode is fully in-memory; explicit
+	// persistent configurations use the file-based append-only log adapter.
 	{
-		queueDir := cfg.Storage.BadgerDir
-		if !strings.HasSuffix(queueDir, "/") {
-			queueDir += "/"
-		}
-		queueDir += "queue"
+		if cfg.Storage.Type == "memory" {
+			memoryStore := queueMemory.New()
+			queueStore = memoryStore
+			consumerGroupStore = queueMemory.NewGroupStore(memoryStore)
+			slog.Info("Using in-memory queue storage")
+		} else {
+			queueDir := cfg.Storage.BadgerDir
+			if !strings.HasSuffix(queueDir, "/") {
+				queueDir += "/"
+			}
+			queueDir += "queue"
 
-		// Use file-based AOL storage (implements both LogStore and ConsumerGroupStore)
-		adapterCfg := logStorage.DefaultAdapterConfig()
-		adapterCfg.RecoverOnStartup = cfg.Storage.RecoverOnStartup
-		adapterCfg.RecoveryLogger = slog.Warn
-		queueLogStore, err = logStorage.NewAdapter(queueDir, adapterCfg)
-		if err != nil {
-			slog.Error("Failed to initialize queue log storage", "error", err)
-			os.Exit(1)
+			adapterCfg := logStorage.DefaultAdapterConfig()
+			adapterCfg.RecoverOnStartup = cfg.Storage.RecoverOnStartup
+			adapterCfg.RecoveryLogger = slog.Warn
+			adapter, adapterErr := logStorage.NewAdapter(queueDir, adapterCfg)
+			if adapterErr != nil {
+				slog.Error("Failed to initialize queue log storage", "error", adapterErr)
+				os.Exit(1)
+			}
+			queueStore = adapter
+			consumerGroupStore = adapter
+			closeQueueLogStore = adapter.Close
 		}
 		// The store is released by the deferred teardown registered before
 		// b.Close, so that it runs after the broker has stopped the queue
@@ -945,8 +1011,8 @@ func main() {
 
 		// Create log-based queue manager with wildcard support
 		qm = queue.NewManager(
-			queueLogStore,
-			queueLogStore,
+			queueStore,
+			consumerGroupStore,
 			deliveryTarget,
 			queueCfg,
 			logger,
@@ -958,8 +1024,8 @@ func main() {
 			raftCoordinator, defaultRaftManager, groupRuntimes, err := qraft.StartQueueCoordinator(
 				cfg.Cluster.NodeID,
 				cfg.Cluster.Raft,
-				queueLogStore,
-				queueLogStore,
+				queueStore,
+				consumerGroupStore,
 				logger,
 			)
 			if err != nil {
@@ -1007,7 +1073,7 @@ func main() {
 			etcdCluster.SetQueueHandler(qm)
 		}
 
-		slog.Info("Log-based queue initialized", "storage", "file", "dir", queueDir)
+		slog.Info("Queue manager initialized", "storage", cfg.Storage.Type)
 	}
 
 	// Local pub/sub dispatcher: routes pub/sub messages to the correct protocol broker
@@ -1056,222 +1122,136 @@ func main() {
 	defer cancel()
 
 	var wg sync.WaitGroup
-	serverErr := make(chan error, 10)
+	serverCount := len(cfg.Listeners.MQTT) + len(cfg.Listeners.AMQP091) + len(cfg.Listeners.AMQP1) +
+		len(cfg.Experimental.HTTP.Listeners) + len(cfg.Experimental.CoAP.Listeners) + 2
+	serverErr := make(chan error, serverCount)
 
-	tcpSlots := []struct {
-		name string
-		cfg  config.TCPListenerConfig
-	}{
-		{name: "v3", cfg: cfg.Server.TCP.V3},
-		{name: "v5", cfg: cfg.Server.TCP.V5},
-		{name: listenerTLS, cfg: cfg.Server.TCP.TLS},
-		{name: listenerMTLS, cfg: cfg.Server.TCP.MTLS},
-	}
-
-	for _, slot := range tcpSlots {
-		if strings.TrimSpace(slot.cfg.Addr) == "" {
-			continue
-		}
-
-		tlsCfg, err := mqtttls.LoadTLSConfig[*tls.Config](&slot.cfg.TLS)
+	for index, listener := range cfg.Listeners.MQTT {
+		tlsCfg, err := loadListenerTLS(listener.TLS)
 		if err != nil {
-			slog.Error("Failed to build TCP TLS configuration", "listener", slot.name, "error", err)
+			slog.Error("Failed to build MQTT TLS configuration", "listener", index, "error", err)
 			os.Exit(1)
 		}
-
-		tcpCfg := tcp.Config{
-			Address:          slot.cfg.Addr,
-			TLSConfig:        tlsCfg,
-			ShutdownTimeout:  cfg.Server.ShutdownTimeout,
-			MaxConnections:   slot.cfg.MaxConnections,
-			ReadTimeout:      slot.cfg.ReadTimeout,
-			WriteTimeout:     slot.cfg.WriteTimeout,
-			SendQueueSize:    cfg.Session.MaxSendQueueSize,
-			DisconnectOnFull: cfg.Session.DisconnectOnFull,
-			ProtocolVersion:  protocolVersionForMode(slot.cfg.Protocol),
-			MaxPacketSize:    maxMQTTPacketSize(cfg.Broker.MaxMessageSize),
-			Logger:           logger,
-		}
-		tcpCfg.IPRateLimiter = rateLimitManager
-		tcpServer := tcp.New(tcpCfg, b)
-
-		wg.Add(1)
-		go func(name, addr, protocol string, server *tcp.Server) {
-			defer wg.Done()
-			slog.Info("Starting TCP server", "mode", name, "address", addr, "protocol", config.NormalizeProtocolMode(protocol))
-			if err := server.Listen(ctx); err != nil {
-				serverErr <- err
+		mode := listenerSecurityMode(listener.TLS)
+		protocolMode := listener.ProtocolMode()
+		if listener.Transport == config.MQTTTransportTCP {
+			tcpCfg := tcp.Config{
+				Address: listener.Address, TLSConfig: tlsCfg, ShutdownTimeout: cfg.Server.ShutdownTimeout,
+				MaxConnections: listener.MaxConnections, ReadTimeout: listener.ReadTimeout,
+				WriteTimeout: listener.WriteTimeout, SendQueueSize: cfg.Session.MaxSendQueueSize,
+				DisconnectOnFull: cfg.Session.DisconnectOnFull,
+				ProtocolVersion:  protocolVersionForMode(protocolMode),
+				MaxPacketSize:    maxMQTTPacketSize(cfg.Broker.MaxMessageSize), Logger: logger,
 			}
-		}(slot.name, slot.cfg.Addr, slot.cfg.Protocol, tcpServer)
-	}
-
-	wsSlots := []struct {
-		name string
-		cfg  config.WSListenerConfig
-	}{
-		{name: "v3", cfg: cfg.Server.WebSocket.V3},
-		{name: "v5", cfg: cfg.Server.WebSocket.V5},
-		{name: listenerTLS, cfg: cfg.Server.WebSocket.TLS},
-		{name: listenerMTLS, cfg: cfg.Server.WebSocket.MTLS},
-	}
-
-	for _, slot := range wsSlots {
-		if strings.TrimSpace(slot.cfg.Addr) == "" {
+			tcpCfg.IPRateLimiter = rateLimitManager
+			tcpServer := tcp.New(tcpCfg, b)
+			wg.Add(1)
+			go func(addr, security, protocol string, server *tcp.Server) {
+				defer wg.Done()
+				slog.Info("Starting MQTT TCP server", "security", security, "address", addr, "protocol", protocol)
+				if err := server.Listen(ctx); err != nil {
+					serverErr <- err
+				}
+			}(listener.Address, mode, protocolMode, tcpServer)
 			continue
-		}
-
-		tlsCfg, err := mqtttls.LoadTLSConfig[*tls.Config](&slot.cfg.TLS)
-		if err != nil {
-			slog.Error("Failed to build WebSocket TLS configuration", "listener", slot.name, "error", err)
-			os.Exit(1)
 		}
 
 		wsCfg := websocket.Config{
-			Address:         slot.cfg.Addr,
-			Path:            slot.cfg.Path,
-			ShutdownTimeout: cfg.Server.ShutdownTimeout,
-			TLSConfig:       tlsCfg,
-			ProtocolVersion: protocolVersionForMode(slot.cfg.Protocol),
-			AllowedOrigins:  slot.cfg.AllowedOrigins,
-			MaxPacketSize:   maxMQTTPacketSize(cfg.Broker.MaxMessageSize),
-			ReadTimeout:     slot.cfg.ReadTimeout,
-			WriteTimeout:    slot.cfg.WriteTimeout,
-			MaxConnections:  slot.cfg.MaxConnections,
+			Address: listener.Address, Path: listener.Path, ShutdownTimeout: cfg.Server.ShutdownTimeout,
+			TLSConfig: tlsCfg, ProtocolVersion: protocolVersionForMode(protocolMode),
+			AllowedOrigins: listener.AllowedOrigins, MaxPacketSize: maxMQTTPacketSize(cfg.Broker.MaxMessageSize),
+			ReadTimeout: listener.ReadTimeout, WriteTimeout: listener.WriteTimeout,
+			MaxConnections: listener.MaxConnections,
 		}
 		wsCfg.IPRateLimiter = rateLimitManager
-
 		wsServer := websocket.New(wsCfg, b, logger)
-
 		wg.Add(1)
-		go func(name, addr, path, protocol string, server *websocket.Server) {
+		go func(addr, path, security, protocol string, server *websocket.Server) {
 			defer wg.Done()
-			slog.Info("Starting WebSocket server", "mode", name, "address", addr, "path", path, "protocol", config.NormalizeProtocolMode(protocol))
+			slog.Info("Starting MQTT WebSocket server", "security", security, "address", addr, "path", path, "protocol", protocol)
 			if err := server.Listen(ctx); err != nil {
 				serverErr <- err
 			}
-		}(slot.name, slot.cfg.Addr, slot.cfg.Path, slot.cfg.Protocol, wsServer)
+		}(listener.Address, listener.Path, mode, protocolMode, wsServer)
 	}
 
-	httpSlots := []struct {
-		name string
-		cfg  config.HTTPListenerConfig
-	}{
-		{name: listenerPlain, cfg: cfg.Server.HTTP.Plain},
-		{name: listenerTLS, cfg: cfg.Server.HTTP.TLS},
-		{name: listenerMTLS, cfg: cfg.Server.HTTP.MTLS},
-	}
-
-	for _, slot := range httpSlots {
-		if strings.TrimSpace(slot.cfg.Addr) == "" {
-			continue
+	for index, listener := range cfg.Experimental.HTTP.Listeners {
+		tlsCfg, err := loadListenerTLS(listener.TLS)
+		if err != nil {
+			slog.Error("Failed to build experimental HTTP TLS configuration", "listener", index, "error", err)
+			os.Exit(1)
 		}
-
-		var tlsCfg *tls.Config
-		if slot.name != listenerPlain {
-			var err error
-			tlsCfg, err = mqtttls.LoadTLSConfig[*tls.Config](&slot.cfg.TLS)
-			if err != nil {
-				slog.Error("Failed to build HTTP TLS configuration", "listener", slot.name, "error", err)
-				os.Exit(1)
-			}
-		}
-
 		httpCfg := http.Config{
-			Address:         slot.cfg.Addr,
+			Address:         listener.Address,
 			ShutdownTimeout: cfg.Server.ShutdownTimeout,
 			TLSConfig:       tlsCfg,
 		}
 		httpServer := http.New(httpCfg, b, logger)
 
 		wg.Add(1)
-		go func(name, addr string, server *http.Server) {
+		go func(security, addr string, server *http.Server) {
 			defer wg.Done()
-			slog.Info("Starting HTTP-MQTT bridge", "mode", name, "address", addr)
+			slog.Warn("Starting experimental HTTP-MQTT bridge", "security", security, "address", addr)
 			if err := server.Listen(ctx); err != nil {
 				serverErr <- err
 			}
-		}(slot.name, slot.cfg.Addr, httpServer)
+		}(listenerSecurityMode(listener.TLS), listener.Address, httpServer)
 	}
 
-	coapSlots := []struct {
-		name string
-		cfg  config.CoAPListenerConfig
-	}{
-		{name: listenerPlain, cfg: cfg.Server.CoAP.Plain},
-		{name: "dtls", cfg: cfg.Server.CoAP.DTLS},
-		{name: "mdtls", cfg: cfg.Server.CoAP.MDTLS},
-	}
-
-	for _, slot := range coapSlots {
-		if strings.TrimSpace(slot.cfg.Addr) == "" {
-			continue
-		}
-
+	for index, listener := range cfg.Experimental.CoAP.Listeners {
 		var dtlsCfg *piondtls.Config
-		if slot.name != listenerPlain {
+		if listener.TLS != nil {
 			var err error
-			dtlsCfg, err = mqtttls.LoadTLSConfig[*piondtls.Config](&slot.cfg.TLS)
+			dtlsCfg, err = mqtttls.LoadTLSConfig[*piondtls.Config](listener.TLS)
 			if err != nil {
-				slog.Error("Failed to build CoAP DTLS configuration", "listener", slot.name, "error", err)
+				slog.Error("Failed to build experimental CoAP DTLS configuration", "listener", index, "error", err)
 				os.Exit(1)
 			}
 		}
 
 		coapCfg := coap.Config{
-			Address:         slot.cfg.Addr,
+			Address:         listener.Address,
 			ShutdownTimeout: cfg.Server.ShutdownTimeout,
 			TLSConfig:       dtlsCfg,
 		}
 		coapServer := coap.New(coapCfg, b, logger)
 
 		wg.Add(1)
-		go func(name, addr string, server *coap.Server) {
+		go func(security, addr string, server *coap.Server) {
 			defer wg.Done()
-			slog.Info("Starting CoAP server", "mode", name, "address", addr)
+			slog.Warn("Starting experimental CoAP server", "security", security, "address", addr)
 			if err := server.Listen(ctx); err != nil {
 				serverErr <- err
 			}
-		}(slot.name, slot.cfg.Addr, coapServer)
+		}(listenerSecurityMode(listener.TLS), listener.Address, coapServer)
 	}
 
-	// AMQP 1.0 servers
-	amqpSlots := []struct {
-		name string
-		cfg  config.AMQPListenerConfig
-	}{
-		{name: listenerPlain, cfg: cfg.Server.AMQP.Plain},
-		{name: listenerTLS, cfg: cfg.Server.AMQP.TLS},
-		{name: listenerMTLS, cfg: cfg.Server.AMQP.MTLS},
-	}
-
-	for _, slot := range amqpSlots {
-		if strings.TrimSpace(slot.cfg.Addr) == "" {
-			continue
-		}
-
-		tlsCfg, err := mqtttls.LoadTLSConfig[*tls.Config](&slot.cfg.TLS)
+	// AMQP 1.0 servers.
+	for index, listener := range cfg.Listeners.AMQP1 {
+		tlsCfg, err := loadListenerTLS(listener.TLS)
 		if err != nil {
-			slog.Error("Failed to build AMQP TLS configuration", "listener", slot.name, "error", err)
+			slog.Error("Failed to build AMQP 1.0 TLS configuration", "listener", index, "error", err)
 			os.Exit(1)
 		}
 
 		amqpCfg := amqp1server.Config{
-			Address:         slot.cfg.Addr,
-			TLSConfig:       tlsCfg,
-			ShutdownTimeout: cfg.Server.ShutdownTimeout,
-			MaxConnections:  slot.cfg.MaxConnections,
-			Logger:          logger,
+			Address:          listener.Address,
+			TLSConfig:        tlsCfg,
+			HandshakeTimeout: listener.HandshakeTimeout,
+			ShutdownTimeout:  cfg.Server.ShutdownTimeout,
+			MaxConnections:   listener.MaxConnections,
+			Logger:           logger,
 		}
 		amqpSrv := amqp1server.New(amqpCfg, amqpBroker)
 
 		wg.Add(1)
-		go func(name, addr string, server *amqp1server.Server) {
+		go func(security, addr string, server *amqp1server.Server) {
 			defer wg.Done()
-			slog.Info("Starting AMQP server", "mode", name, "address", addr)
+			slog.Info("Starting AMQP 1.0 server", "security", security, "address", addr)
 			if err := server.Listen(ctx); err != nil {
 				serverErr <- err
 			}
-		}(slot.name, slot.cfg.Addr, amqpSrv)
+		}(listenerSecurityMode(listener.TLS), listener.Address, amqpSrv)
 	}
 
 	// AMQP 0.9.1 servers. The public listeners receive only the external
@@ -1286,9 +1266,8 @@ func main() {
 		amqp091ExternalHooks,
 		maxAMQP091MessageSize,
 	)
-	// Both local listeners share one policy. They differ only in network
-	// placement: capability comes from the authenticated principal's role, so a
-	// principal cannot widen itself by choosing a port.
+	// Every local listener shares one policy. Network placement never grants a
+	// capability; the authenticated principal's role and ACL do.
 	localAMQP091Policy := amqpbroker.NewLocalConnectionPolicy(
 		localPolicyAdapter,
 		localPolicyAdapter,
@@ -1297,45 +1276,33 @@ func main() {
 	)
 	amqp091Slots := []struct {
 		name   string
-		cfg    config.AMQP091ListenerConfig
+		cfg    config.AMQP091V1ListenerConfig
 		policy *amqpbroker.ConnectionPolicy
-	}{
-		{name: listenerPlain, cfg: cfg.Server.AMQP091.Plain, policy: externalAMQP091Policy},
-		{name: listenerTLS, cfg: cfg.Server.AMQP091.TLS, policy: externalAMQP091Policy},
-		{name: listenerMTLS, cfg: cfg.Server.AMQP091.MTLS, policy: externalAMQP091Policy},
-	}
-	// Every local-principal listener gets the same policy under whichever key
-	// named it. They differ only in network placement.
-	for _, listener := range cfg.Server.AMQP091.LocalListeners() {
+	}{}
+	for index, listener := range cfg.Listeners.AMQP091 {
+		policy := externalAMQP091Policy
+		if listener.Auth == config.AMQP091AuthLocal {
+			policy = localAMQP091Policy
+		}
 		amqp091Slots = append(amqp091Slots, struct {
 			name   string
-			cfg    config.AMQP091ListenerConfig
+			cfg    config.AMQP091V1ListenerConfig
 			policy *amqpbroker.ConnectionPolicy
-		}{name: listener.Name, cfg: listener.Config, policy: localAMQP091Policy})
-	}
-	if deprecated := cfg.Server.AMQP091.DeprecatedLocalListenerNames(); len(deprecated) > 0 {
-		slog.Warn("Deprecated AMQP 0.9.1 listener key",
-			"keys", strings.Join(deprecated, ","),
-			"replacement", "server.amqp091.local",
-			"reason", "local listeners are equivalent; capability comes from the principal role")
+		}{name: fmt.Sprintf("amqp091[%d]", index), cfg: listener, policy: policy})
 	}
 
 	var amqp091Ready []<-chan struct{}
 	for _, slot := range amqp091Slots {
-		if strings.TrimSpace(slot.cfg.Addr) == "" {
-			continue
-		}
-
-		tlsCfg, err := mqtttls.LoadTLSConfig[*tls.Config](&slot.cfg.TLS)
+		tlsCfg, err := loadListenerTLS(slot.cfg.TLS)
 		if err != nil {
 			slog.Error("Failed to build AMQP 0.9.1 TLS configuration", "listener", slot.name, "error", err)
 			os.Exit(1)
 		}
 
 		amqp091Cfg := amqpserver.Config{
-			Address:          slot.cfg.Addr,
+			Address:          slot.cfg.Address,
 			TLSConfig:        tlsCfg,
-			HandshakeTimeout: 10 * time.Second,
+			HandshakeTimeout: slot.cfg.HandshakeTimeout,
 			ShutdownTimeout:  cfg.Server.ShutdownTimeout,
 			MaxConnections:   slot.cfg.MaxConnections,
 			ConnectionPolicy: slot.policy,
@@ -1351,7 +1318,7 @@ func main() {
 			if err := server.Listen(ctx); err != nil {
 				serverErr <- err
 			}
-		}(slot.name, slot.cfg.Addr, amqp091Srv)
+		}(slot.name, slot.cfg.Address, amqp091Srv)
 	}
 
 	for _, ready := range amqp091Ready {
@@ -1384,7 +1351,7 @@ func main() {
 	}
 
 	// Initialize config reload manager.
-	reloadManager := reload.New(*configFile, cfg,
+	reloadManager := reload.New(configFile, cfg,
 		reload.WithLogSetup(reload.SetupLogger),
 		reload.WithRateLimiter(rateLimitManager),
 		reload.WithBroker(b),
@@ -1425,7 +1392,7 @@ func main() {
 			ShutdownTimeout: cfg.Server.ShutdownTimeout,
 		}
 
-		if qm != nil && queueLogStore != nil {
+		if qm != nil {
 			apiServer := api.New(apiCfg, b, amqp091Broker, cl, qm, qm.QueueStore(), qm.GroupStore(), logger)
 			apiServer.SetReloadManager(reloadManager)
 

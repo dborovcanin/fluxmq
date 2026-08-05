@@ -20,7 +20,8 @@ FluxMQ supports multiple protocols and transports. Each protocol adapter transla
 | **HTTP**       | HTTP POST      | `/publish` endpoint                        | No                                 | No                                |
 | **CoAP**       | UDP            | CoAP POST                                  | No                                 | No                                |
 
-Protocol listeners are configured under `server.*` in the YAML config. See [Server configuration](/configuration/server).
+Stable protocol listeners are configured under typed `listeners.*` lists. See
+[listener configuration](/configuration/server).
 
 ## Protocol Adapter Design
 

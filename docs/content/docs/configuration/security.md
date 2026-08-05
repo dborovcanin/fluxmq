@@ -37,9 +37,9 @@ that mesh, never for cross-host traffic.
 
 By default, all protocols require auth when `auth.external.url` is set. The
 `protocols` map lets you selectively enable or disable the external callout per
-protocol. Internal AMQP services that need local authentication use
-`server.amqp091.local`; they do not disable authentication on a remote
-listener.
+protocol. Internal AMQP services that need local authentication use a distinct
+`listeners.amqp091` entry with `auth: local`; remote entries retain
+`auth: external`.
 
 ```yaml
 auth:
@@ -78,16 +78,19 @@ identity here, and each entry grants exactly the targets it names. Remote
 clients, devices, and tenants authenticate through `auth.external`.
 
 ```yaml
-server:
+version: 1
+listeners:
+  mqtt: []
+  amqp1: []
   amqp091:
-    local:
-      addr: ":5683"
+    - address: ":5683"
+      auth: local
       max_connections: 32
-      cert_file: "/run/secrets/fluxmq_server_cert"
-      key_file: "/run/secrets/fluxmq_server_key"
-      ca_file: "/run/secrets/local_client_ca"
-      client_auth: "require"
-      min_version: "TLS1.2"
+      tls:
+        cert_file: "/run/secrets/fluxmq_server_cert"
+        key_file: "/run/secrets/fluxmq_server_key"
+        client_ca_file: "/run/secrets/local_client_ca"
+        min_version: "1.2"
 
 auth:
   local_principals:
@@ -110,10 +113,9 @@ subscription queues named exactly or by pattern. Port `5683` must remain on a
 private network and must not be published to the host or Internet.
 
 An **exact** publish target is single-node only. It is appended and synced on
-the receiving node and never forwarded, so granting one together with
-`cluster.enabled` is a startup error rather than a deployment whose records some
-consumers cannot reach. `cluster.enabled` defaults to true, so a principal
-holding an exact target needs it set to false explicitly.
+the receiving node and never forwarded, so granting one while `cluster.members`
+enables clustering is a startup error rather than a deployment whose records
+some consumers cannot reach. Omit `cluster` for that single-node deployment.
 
 A **prefix** publish target cannot name a queue, so it never takes that
 single-node durable path: it is an ordinary topic publish, which the cluster
@@ -130,7 +132,7 @@ publisher whose behavior is declared in configuration. What the rule gates is
 the durable-stream path, which bypasses cluster distribution by design.
 
 The same rule is applied to reloads against the running node rather than the
-new file. `auth.local_principals` reloads at runtime while `cluster.enabled` and
+new file. `auth.local_principals` reloads at runtime while cluster membership and
 local listener changes require a restart. A single edit that disables
 clustering or removes the local listener while adding an exact target would
 otherwise apply the target immediately while the node stayed clustered and its
@@ -176,9 +178,8 @@ Message property names beginning with `_flux.` are reserved for broker-internal
 state passed between first-party services. They are not part of the client
 API, and no client may set or read one.
 
-The boundary is the listener's trust policy, not the protocol. Only the AMQP
-0.9.1 `local` listener and its deprecated `internal` and `service` aliases are
-trusted, because they admit solely mTLS peers whose verified certificate URI
+The boundary is the listener's trust policy, not the protocol. Only AMQP 0.9.1
+entries with `auth: local` are trusted, because they admit solely mTLS peers whose verified certificate URI
 SAN matches a principal declared in FluxMQ's own configuration. Every other connection — MQTT, HTTP, CoAP, AMQP
 1.0, and AMQP 0.9.1 on the remote listener — is treated as a tenant or device:
 
@@ -240,19 +241,10 @@ reconnect.
 
 ### Listeners
 
-`server.amqp091.local` admits mTLS peers whose verified certificate URI SAN
-matches a configured principal. It confers no capability of its own. Configure
-more than one local listener only when you want, say, the audit path and the
-service path on separate network segments; one is enough otherwise. Each
-requires a configured principal. Whether a deployment may run clustered is a
-question about the permissions its principals hold, not about the listener: see
-the exact-versus-prefix distinction above.
-
-`server.amqp091.internal` and `server.amqp091.service` are deprecated aliases
-for `local`. They behave identically to it and to each other, and FluxMQ logs a
-warning naming any that are still in use. They exist because capability used to
-be a property of the listener; it is now a property of the principal, so the
-distinction they drew no longer means anything.
+An AMQP 0.9.1 list entry with `auth: local` admits mTLS peers whose verified
+certificate URI SAN matches a configured principal. It confers no capability
+of its own. Add multiple local entries only for separate network segments.
+There are no listener aliases; capability belongs to the principal.
 
 `subscribe` names queues, either exactly or by pattern; duplicates, blank
 entries, surrounding whitespace, malformed wildcards, and entries written as
@@ -451,32 +443,37 @@ See [Blocking Hooks](/architecture/hooks) for request and response details.
 
 ## TLS and mTLS
 
-Listeners share TLS fields across `tls` and `mtls` blocks.
+Every stable listener has one optional `tls` mapping. Adding
+`client_ca_file` makes it mTLS.
 
 ```yaml
-server:
-  tcp:
-    tls:
-      addr: ":8883"
-      cert_file: "/path/server.crt"
-      key_file: "/path/server.key"
-    mtls:
-      addr: ":8884"
-      cert_file: "/path/server.crt"
-      key_file: "/path/server.key"
-      ca_file: "/path/clients-ca.crt"
-      client_auth: "require"
+listeners:
+  mqtt:
+    - address: ":8883"
+      transport: tcp
+      versions: ["3.1.1", "5.0"]
+      tls:
+        cert_file: "/path/server.crt"
+        key_file: "/path/server.key"
+    - address: ":8884"
+      transport: tcp
+      versions: ["3.1.1", "5.0"]
+      tls:
+        cert_file: "/path/server.crt"
+        key_file: "/path/server.key"
+        client_ca_file: "/path/clients-ca.crt"
 ```
 
 ## Inter-Broker TLS
 
 ```yaml
 cluster:
-  transport:
-    tls_enabled: true
-    tls_cert_file: "/path/transport.crt"
-    tls_key_file: "/path/transport.key"
-    tls_ca_file: "/path/transport-ca.crt"
+  members:
+    node1: node1.internal
+  tls:
+    cert_file: "/path/cluster.crt"
+    key_file: "/path/cluster.key"
+    ca_file: "/path/cluster-ca.crt"
 ```
 
 ## Rate Limiting

@@ -1,34 +1,30 @@
 ---
 title: Storage
-description: Configure broker storage backend and BadgerDB settings
+description: Configure FluxMQ memory or Badger storage
 ---
 
-# Storage Configuration
-
-**Last Updated:** 2026-02-18
-
-Broker state (sessions, retained messages, offline queues) is stored in the backend defined by `storage`.
+# Storage
 
 ```yaml
+version: 1
+listeners:
+  mqtt:
+    - address: ":1883"
+      transport: tcp
+      versions: ["3.1.1", "5.0"]
+  amqp091: []
+  amqp1: []
 storage:
-  type: "badger"   # "badger" or "memory"
-  badger_dir: "/tmp/fluxmq/data"
-  sync_writes: false
+  type: badger
+  data_dir: /var/lib/fluxmq
+  sync_writes: true
+  recover_on_startup: false
 ```
 
-## Field Notes
+- `type` is `memory` or `badger`.
+- `data_dir` is required for Badger and cluster mode.
+- `sync_writes` requests synchronous Badger writes.
+- `recover_on_startup` enables explicit startup recovery.
 
-- `type`: storage backend (`memory` or `badger`).
-- `badger_dir`: required when `type=badger`.
-- `sync_writes`: durability/throughput tradeoff for Badger writes.
-
-Queue logs are stored under:
-
-```
-<storage.badger_dir>/queue
-```
-
-## Learn More
-
-- [Storage internals](/architecture/storage)
-- [Configuration reference](/reference/configuration-reference)
+FluxMQ derives implementation-specific broker and per-node cluster directories
+under `storage.data_dir`; those paths are not part of the public schema.

@@ -73,6 +73,7 @@ type ReloadResult struct {
 type Manager struct {
 	mu           sync.Mutex
 	configFile   string
+	nodeID       string
 	current      *config.Config
 	version      uint64
 	shuttingDown atomic.Bool
@@ -130,6 +131,7 @@ func WithLogSetup(fn func(cfg config.LogConfig)) Option {
 func New(configFile string, initial *config.Config, opts ...Option) *Manager {
 	m := &Manager{
 		configFile: configFile,
+		nodeID:     initial.Cluster.NodeID,
 		current:    initial,
 		version:    1,
 	}
@@ -172,7 +174,7 @@ func (m *Manager) Reload(ctx context.Context) (*ReloadResult, error) {
 	start := time.Now()
 	result := &ReloadResult{Version: m.version}
 
-	newCfg, err := config.Load(m.configFile)
+	newCfg, err := config.LoadWithOptions(m.configFile, config.LoadOptions{NodeID: m.nodeID})
 	if err != nil {
 		if m.localPrincipalsFailed != nil && len(m.current.Auth.LocalPrincipals) > 0 {
 			m.localPrincipalsFailed(err)

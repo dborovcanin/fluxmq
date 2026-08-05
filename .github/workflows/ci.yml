@@ -59,6 +59,19 @@ jobs:
       - name: Build
         run: make build
 
+      - name: Validate shipped configurations and Compose manifests
+        env:
+          AUDIT_SECRET_CURRENT_FILE: /tmp/audit-secret-current
+          AUDIT_SECRET_PREVIOUS_FILE: /tmp/audit-secret-previous
+          FLUXMQ_SERVER_CERT_FILE: /tmp/fluxmq-server-cert
+          FLUXMQ_SERVER_KEY_FILE: /tmp/fluxmq-server-key
+          LOCAL_CLIENT_CA_FILE: /tmp/local-client-ca
+        run: |
+          make validate-configs
+          docker compose -f deployments/docker/compose.yaml config --quiet
+          docker compose -f deployments/docker/compose.yaml -f deployments/docker/compose.local-principal.yaml config --quiet
+          docker compose -f deployments/cluster/docker-compose.yaml config --quiet
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:

@@ -10,16 +10,22 @@ description: Command-line flags for starting FluxMQ
 ## fluxmq
 
 ```bash
-./build/fluxmq [--config /path/to/config.yaml]
+./build/fluxmq [--config /path/to/config.yaml] [--node-id member-id]
+./build/fluxmq config validate --config /path/to/config.yaml [--node-id member-id]
 ```
 
 ### Flags
 
-- `--config` Path to a YAML configuration file. If omitted or the file is missing, defaults are used.
+- `--config` Path to a v1 YAML configuration file. If omitted, FluxMQ starts a
+  loopback-only, in-memory development broker and prints a warning. An explicitly
+  named missing file is an error.
+- `--node-id` Local member selected from `cluster.members`. It overrides
+  `FLUXMQ_NODE_ID`.
 
 ## Examples
 
 ```bash
 ./build/fluxmq
-./build/fluxmq --config examples/no-cluster.yaml
+./build/fluxmq --config examples/config.yaml
+./build/fluxmq config validate --config examples/production.yaml
 ```

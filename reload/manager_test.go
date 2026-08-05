@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,6 +36,19 @@ func (b *mockBrokerTuner) MaxQoS() byte       { return byte(b.maxQoS.Load()) }
 func writeConfig(t *testing.T, dir, content string) string {
 	t.Helper()
 	path := filepath.Join(dir, "config.yaml")
+	if !strings.HasPrefix(strings.TrimSpace(content), "version:") {
+		content = `version: 1
+listeners:
+  mqtt:
+    - address: "127.0.0.1:1883"
+      transport: tcp
+      versions: ["3.1.1", "5.0"]
+  amqp091: []
+  amqp1: []
+storage:
+  type: memory
+` + content
+	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +58,7 @@ func writeConfig(t *testing.T, dir, content string) string {
 func TestReloadNoChanges(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
-	// Write the default config as YAML (use an empty file — Load returns defaults).
+	// Write the normalized v1 defaults.
 	path := writeConfig(t, dir, "")
 
 	m := New(path, cfg)
@@ -360,10 +374,16 @@ func TestReloadRestartRequired(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 
-	yamlContent := `server:
-  tcp:
-    v3:
-      addr: ":9999"
+	yamlContent := `version: 1
+listeners:
+  mqtt:
+    - address: ":9999"
+      transport: tcp
+      versions: ["3.1.1", "5.0"]
+  amqp091: []
+  amqp1: []
+storage:
+  type: memory
 `
 	path := writeConfig(t, dir, yamlContent)
 
@@ -388,10 +408,16 @@ func TestReloadRestartRequiredStaysPending(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 
-	yamlContent := `server:
-  tcp:
-    v3:
-      addr: ":9999"
+	yamlContent := `version: 1
+listeners:
+  mqtt:
+    - address: ":9999"
+      transport: tcp
+      versions: ["3.1.1", "5.0"]
+  amqp091: []
+  amqp1: []
+storage:
+  type: memory
 `
 	path := writeConfig(t, dir, yamlContent)
 
@@ -438,14 +464,8 @@ func TestReloadMissingFile(t *testing.T) {
 	cfg := config.Default()
 	m := New("/nonexistent/path/config.yaml", cfg)
 
-	// config.Load returns defaults for missing files, so this should succeed
-	// but produce no changes (since defaults == defaults).
-	result, err := m.Reload(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.HasChanges() {
-		t.Error("expected no changes when loading defaults from missing file")
+	if _, err := m.Reload(context.Background()); err == nil {
+		t.Fatal("expected reload to fail for an explicitly missing file")
 	}
 }
 
@@ -694,12 +714,18 @@ func TestReloadMixedChanges(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 
-	yamlContent := `log:
+	yamlContent := `version: 1
+listeners:
+  mqtt:
+    - address: ":9999"
+      transport: tcp
+      versions: ["3.1.1", "5.0"]
+  amqp091: []
+  amqp1: []
+storage:
+  type: memory
+log:
   level: debug
-server:
-  tcp:
-    v3:
-      addr: ":9999"
 `
 	path := writeConfig(t, dir, yamlContent)
 

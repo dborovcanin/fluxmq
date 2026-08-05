@@ -11,7 +11,8 @@ FluxMQ includes an HTTP publish bridge.
 
 ## Enable
 
-Set `server.http.plain.addr` (or TLS/MTLS) in your config.
+Set `experimental.http.enabled: true` and add a listener below
+`experimental.http.listeners`. Add its optional `tls` mapping for TLS or mTLS.
 
 ## Publish
 

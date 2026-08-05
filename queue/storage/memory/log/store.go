@@ -17,7 +17,7 @@ import (
 
 var _ storage.DurableQueueStore = (*Store)(nil)
 
-// Store implements queueStore and ConsumerGroupStore using in-memory data structures.
+// Store implements QueueStore and the legacy ConsumerStore using in-memory data structures.
 type Store struct {
 	logs       sync.Map // map[string]*Log
 	groups     sync.Map // map[string]map[string]*types.ConsumerGroupState (queueName -> groupID -> state)
@@ -444,7 +444,7 @@ func (s *Store) getQueueLog(queueName string) (*log, error) {
 	return val.(*log), nil
 }
 
-// --- ConsumerGroupStore Implementation ---
+// --- Shared consumer-group state used by GroupStore ---
 
 // CreateConsumerGroup creates a new consumer group for a queue.
 func (s *Store) CreateConsumerGroup(ctx context.Context, group *types.ConsumerGroup) error {

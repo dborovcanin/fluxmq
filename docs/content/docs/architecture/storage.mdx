@@ -14,7 +14,7 @@ FluxMQ durable queues are backed by a file-based append-only log (AOL). Each que
 By default, the queue log storage is created under:
 
 ```
-<storage.badger_dir>/queue
+<storage.data_dir>/queue
 ```
 
 This is wired in `cmd/main.go` when the queue manager is constructed.

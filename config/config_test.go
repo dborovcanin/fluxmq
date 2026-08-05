@@ -4,6 +4,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,35 +17,24 @@ const (
 	testBindAddr      = "127.0.0.1:8100"
 	testAuthURL       = "localhost:7016"
 	testProfileHot    = "hot"
+	testClusterNode1  = "node1"
 )
 
 func TestDefault(t *testing.T) {
 	cfg := Default()
 
-	// Test server defaults
-	if cfg.Server.TCP.V3.Addr != ":1883" {
-		t.Errorf("expected default TCP v3 addr :1883, got %s", cfg.Server.TCP.V3.Addr)
+	if !cfg.Development || cfg.Storage.Type != storageTypeMemory {
+		t.Fatalf("default must be in-memory development mode: development=%v storage=%q", cfg.Development, cfg.Storage.Type)
 	}
-	if cfg.Server.TCP.V5.Addr != ":1884" {
-		t.Errorf("expected default TCP v5 addr :1884, got %s", cfg.Server.TCP.V5.Addr)
+	if len(cfg.Listeners.MQTT) != 1 {
+		t.Fatalf("expected one MQTT listener, got %d", len(cfg.Listeners.MQTT))
 	}
-	if cfg.Server.TCP.V3.MaxConnections != 10000 {
-		t.Errorf("expected default max connections 10000, got %d", cfg.Server.TCP.V3.MaxConnections)
+	listener := cfg.Listeners.MQTT[0]
+	if listener.Address != "127.0.0.1:1883" || listener.ProtocolMode() != ProtocolModeAuto {
+		t.Fatalf("unexpected development listener: %+v", listener)
 	}
-	if cfg.Server.TCP.V3.Protocol != ProtocolModeV3 {
-		t.Errorf("expected default TCP v3 protocol %q, got %q", ProtocolModeV3, cfg.Server.TCP.V3.Protocol)
-	}
-	if cfg.Server.TCP.V5.Protocol != ProtocolModeV5 {
-		t.Errorf("expected default TCP v5 protocol %q, got %q", ProtocolModeV5, cfg.Server.TCP.V5.Protocol)
-	}
-	if cfg.Server.WebSocket.V3.Protocol != ProtocolModeV3 {
-		t.Errorf("expected default WebSocket v3 protocol %q, got %q", ProtocolModeV3, cfg.Server.WebSocket.V3.Protocol)
-	}
-	if cfg.Server.WebSocket.V5.Protocol != ProtocolModeV5 {
-		t.Errorf("expected default WebSocket v5 protocol %q, got %q", ProtocolModeV5, cfg.Server.WebSocket.V5.Protocol)
-	}
-	if cfg.Server.AdminAPIAddr != ":8082" {
-		t.Errorf("expected default admin API addr :8082, got %q", cfg.Server.AdminAPIAddr)
+	if cfg.Admin.Address != "127.0.0.1:8082" || cfg.Health.Address != "127.0.0.1:8081" {
+		t.Fatalf("development control endpoints must be loopback-only: admin=%q health=%q", cfg.Admin.Address, cfg.Health.Address)
 	}
 
 	// Test broker defaults
@@ -89,7 +79,8 @@ func TestValidate(t *testing.T) {
 			name: "AMQP 0.9.1-only deployment is valid",
 			modify: func(c *Config) {
 				disableMessagingListeners(c)
-				c.Server.AMQP091.Plain.Addr = ":5682"
+				c.Listeners.AMQP091 = []AMQP091V1ListenerConfig{{Address: defaultAMQP091, Auth: AMQP091AuthExternal, MaxConnections: 100}}
+				c.Server.AMQP091.Plain.Addr = defaultAMQP091
 				c.Server.AMQP091.Plain.MaxConnections = 100
 			},
 			wantErr: false,
@@ -106,6 +97,7 @@ func TestValidate(t *testing.T) {
 		{
 			name: "negative websocket max_connections",
 			modify: func(c *Config) {
+				c.Server.WebSocket.V3.Addr = defaultWSV3Addr
 				c.Server.WebSocket.V3.MaxConnections = -1
 			},
 			wantErr: true,
@@ -113,6 +105,7 @@ func TestValidate(t *testing.T) {
 		{
 			name: "negative websocket read_timeout",
 			modify: func(c *Config) {
+				c.Server.WebSocket.V3.Addr = defaultWSV3Addr
 				c.Server.WebSocket.V3.ReadTimeout = -time.Second
 			},
 			wantErr: true,
@@ -120,6 +113,7 @@ func TestValidate(t *testing.T) {
 		{
 			name: "negative websocket write_timeout",
 			modify: func(c *Config) {
+				c.Server.WebSocket.V3.Addr = defaultWSV3Addr
 				c.Server.WebSocket.V3.WriteTimeout = -time.Second
 			},
 			wantErr: true,
@@ -176,6 +170,7 @@ func TestValidate(t *testing.T) {
 		{
 			name: "valid raft groups config",
 			modify: func(c *Config) {
+				c.Cluster.Enabled = true
 				c.Cluster.Raft.Enabled = true
 				c.Cluster.Raft.Groups = map[string]RaftGroupConfig{
 					testProfileHot: {
@@ -194,6 +189,7 @@ func TestValidate(t *testing.T) {
 		{
 			name: "invalid raft group missing bind addr",
 			modify: func(c *Config) {
+				c.Cluster.Enabled = true
 				c.Cluster.Raft.Enabled = true
 				c.Cluster.Raft.Groups = map[string]RaftGroupConfig{
 					testProfileHot: {
@@ -208,6 +204,7 @@ func TestValidate(t *testing.T) {
 		{
 			name: "queue group must exist when auto provision disabled",
 			modify: func(c *Config) {
+				c.Cluster.Enabled = true
 				c.Cluster.Raft.Enabled = true
 				c.Cluster.Raft.AutoProvisionGroups = false
 				c.Queues = []QueueConfig{
@@ -299,6 +296,7 @@ func TestValidate(t *testing.T) {
 }
 
 func disableMessagingListeners(c *Config) {
+	c.Listeners = ListenersConfig{}
 	c.Server.TCP.V3.Addr = ""
 	c.Server.TCP.V5.Addr = ""
 	c.Server.TCP.TLS.Addr = ""
@@ -319,23 +317,12 @@ func disableMessagingListeners(c *Config) {
 	c.Server.AMQP091.Plain.Addr = ""
 	c.Server.AMQP091.TLS.Addr = ""
 	c.Server.AMQP091.MTLS.Addr = ""
-	c.Server.AMQP091.Internal.Addr = ""
 }
 
 func TestLoadNonExistent(t *testing.T) {
-	cfg, err := Load("nonexistent.yaml")
-	if err != nil {
-		t.Fatalf("Load() should return default config and no error when file doesn't exist, got error: %v", err)
-	}
-	if cfg == nil {
-		t.Fatal("Load() should return a default config, got nil")
-	}
-
-	if cfg.Server.TCP.V3.Addr != ":1883" {
-		t.Errorf("expected default config, got TCP v3 addr %s", cfg.Server.TCP.V3.Addr)
-	}
-	if cfg.Server.TCP.V5.Addr != ":1884" {
-		t.Errorf("expected default config, got TCP v5 addr %s", cfg.Server.TCP.V5.Addr)
+	_, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Load() error = %v, want explicit missing-file failure", err)
 	}
 }
 
@@ -344,8 +331,7 @@ func TestSaveLoad(t *testing.T) {
 
 	// Create custom config
 	cfg := Default()
-	cfg.Server.TCP.V3.Addr = ":2883"
-	cfg.Server.TCP.V5.Addr = ":2884"
+	cfg.Listeners.MQTT[0].Address = ":2883"
 	cfg.Broker.RetryInterval = 30 * time.Second
 	cfg.Log.Level = testLogLevelDebug
 
@@ -361,11 +347,8 @@ func TestSaveLoad(t *testing.T) {
 	}
 
 	// Verify
-	if loaded.Server.TCP.V3.Addr != ":2883" {
-		t.Errorf("expected TCP v3 addr :2883, got %s", loaded.Server.TCP.V3.Addr)
-	}
-	if loaded.Server.TCP.V5.Addr != ":2884" {
-		t.Errorf("expected TCP v5 addr :2884, got %s", loaded.Server.TCP.V5.Addr)
+	if loaded.Listeners.MQTT[0].Address != ":2883" {
+		t.Errorf("expected MQTT addr :2883, got %s", loaded.Listeners.MQTT[0].Address)
 	}
 	if loaded.Broker.RetryInterval != 30*time.Second {
 		t.Errorf("expected retry interval 30s, got %v", loaded.Broker.RetryInterval)
@@ -479,6 +462,11 @@ func TestExampleConfigsValid(t *testing.T) {
 	if len(files) == 0 {
 		t.Fatal("no example configs found in ../examples/")
 	}
+	files = append(files,
+		"../deployments/docker/config.yaml",
+		"../deployments/docker/config-local-principal.yaml",
+		"../deployments/cluster/config/cluster.yaml",
+	)
 
 	for _, f := range files {
 		t.Run(filepath.Base(f), func(t *testing.T) {
@@ -498,7 +486,11 @@ func TestExampleConfigsValid(t *testing.T) {
 					t.Fatalf("write rewritten example: %v", err)
 				}
 			}
-			if _, err := Load(loadPath); err != nil {
+			options := LoadOptions{}
+			if filepath.Base(f) == "cluster.yaml" {
+				options.NodeID = testClusterNode1
+			}
+			if _, err := LoadWithOptions(loadPath, options); err != nil {
 				t.Fatalf("Load(%s): %v", f, err)
 			}
 		})

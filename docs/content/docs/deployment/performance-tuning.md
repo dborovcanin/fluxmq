@@ -87,7 +87,9 @@ If STW pauses exceed your latency budget or GC CPU% is consistently above 5–10
 1. **Start with defaults.** For most deployments, the default GC settings are sufficient.
 2. **Enable `gctrace`.** Monitor GC behavior under production load to determine if tuning is needed.
 3. **Apply tuning.** If GC is a factor, set `GOMEMLIMIT` to 80% of available memory and `GOGC=off`.
-4. **Monitor.** Use OpenTelemetry metrics (`server.metrics_enabled`) alongside `gctrace` during initial rollout to confirm behavior under real traffic.
+4. **Monitor.** Use OpenTelemetry metrics (`telemetry.enabled` and
+   `telemetry.metrics_enabled`) alongside `gctrace` during initial rollout to
+   confirm behavior under real traffic.
 
 ## Learn More
 

@@ -239,7 +239,10 @@ func (c *Connection) handleOpen() error {
 	if err != nil {
 		return err
 	}
-	return c.conn.WritePerformative(0, body)
+	if err := c.conn.WritePerformative(0, body); err != nil {
+		return err
+	}
+	return c.conn.ClearDeadline()
 }
 
 func (c *Connection) processFrames() error {
