@@ -415,6 +415,89 @@ func TestSecurityWarningsCoverAdminExposure(t *testing.T) {
 	}
 }
 
+// An omitted limit or timeout takes the default; an explicit 0 means unlimited
+// connections or no deadline. Collapsing the two would make "no cap"
+// unexpressible and would silently change meaning if the default ever moved.
+func TestLoadV1ZeroMeansUnlimitedAndOmittedMeansDefault(t *testing.T) {
+	listener := func(fields string) string {
+		return strings.Replace(minimalV1, "      versions: [\"3.1.1\", \"5.0\"]", "      versions: [\"3.1.1\", \"5.0\"]\n"+fields, 1)
+	}
+
+	t.Run("omitted takes the default", func(t *testing.T) {
+		got := loadTestYAML(t, minimalV1, LoadOptions{}).Listeners.MQTT[0]
+		if got.MaxConnections != defaultMaxConnections {
+			t.Fatalf("max_connections = %d, want the default %d", got.MaxConnections, defaultMaxConnections)
+		}
+		if got.ReadTimeout != defaultListenerTimeout || got.WriteTimeout != defaultListenerTimeout {
+			t.Fatalf("timeouts = %v/%v, want the default %v", got.ReadTimeout, got.WriteTimeout, defaultListenerTimeout)
+		}
+	})
+
+	t.Run("explicit zero means unlimited", func(t *testing.T) {
+		body := listener("      max_connections: 0\n      read_timeout: 0s\n      write_timeout: 0s")
+		got := loadTestYAML(t, body, LoadOptions{}).Listeners.MQTT[0]
+		if got.MaxConnections != 0 || got.ReadTimeout != 0 || got.WriteTimeout != 0 {
+			t.Fatalf("an explicit 0 was replaced by a default: %+v", got)
+		}
+	})
+
+	t.Run("explicit value is kept", func(t *testing.T) {
+		got := loadTestYAML(t, listener("      max_connections: 42\n      read_timeout: 5s"), LoadOptions{}).Listeners.MQTT[0]
+		if got.MaxConnections != 42 || got.ReadTimeout != 5*time.Second {
+			t.Fatalf("explicit values were not preserved: %+v", got)
+		}
+		if got.WriteTimeout != defaultListenerTimeout {
+			t.Fatalf("an omitted sibling lost its default: %v", got.WriteTimeout)
+		}
+	})
+
+	t.Run("negative is still rejected", func(t *testing.T) {
+		_, err := loadTestYAMLError(t, listener("      max_connections: -1"), LoadOptions{})
+		if err == nil || !strings.Contains(err.Error(), "max_connections cannot be negative") {
+			t.Fatalf("LoadWithOptions() error = %v, want a negative-limit failure", err)
+		}
+	})
+
+	t.Run("AMQP handshake timeout", func(t *testing.T) {
+		withAMQP := func(fields string) string {
+			return strings.Replace(minimalV1, "  amqp1: []", "  amqp1:\n    - address: \":5672\"\n"+fields, 1)
+		}
+		if got := loadTestYAML(t, withAMQP(""), LoadOptions{}).Listeners.AMQP1[0]; got.HandshakeTimeout != defaultHandshakeTimeout {
+			t.Fatalf("handshake_timeout = %v, want the default %v", got.HandshakeTimeout, defaultHandshakeTimeout)
+		}
+		cfg := loadTestYAML(t, withAMQP("      handshake_timeout: 0s"), LoadOptions{})
+		if cfg.Listeners.AMQP1[0].HandshakeTimeout != 0 {
+			t.Fatal("an explicit 0 handshake_timeout was replaced by a default")
+		}
+		// Disabling the only bound on a pre-auth connection is legal but loud.
+		warnings := cfg.SecurityWarnings()
+		if len(warnings) == 0 || !strings.Contains(strings.Join(warnings, " "), "handshake_timeout is 0") {
+			t.Fatalf("SecurityWarnings() = %v, want a disabled-handshake warning", warnings)
+		}
+	})
+}
+
+// Save writes resolved values, so a saved file reloads to exactly the same
+// configuration rather than re-defaulting anything that was explicitly zero.
+func TestSaveRoundTripsExplicitZero(t *testing.T) {
+	body := strings.Replace(minimalV1, "      versions: [\"3.1.1\", \"5.0\"]",
+		"      versions: [\"3.1.1\", \"5.0\"]\n      max_connections: 0\n      read_timeout: 0s", 1)
+	cfg := loadTestYAML(t, body, LoadOptions{})
+
+	saved := filepath.Join(t.TempDir(), "saved.yaml")
+	if err := cfg.Save(saved); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	reloaded, err := Load(saved)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	got := reloaded.Listeners.MQTT[0]
+	if got.MaxConnections != 0 || got.ReadTimeout != 0 {
+		t.Fatalf("an explicit 0 did not survive a save/load round trip: %+v", got)
+	}
+}
+
 func loadTestYAML(t *testing.T, body string, options LoadOptions) *Config {
 	t.Helper()
 	cfg, err := loadTestYAMLError(t, body, options)

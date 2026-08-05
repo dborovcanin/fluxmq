@@ -228,11 +228,14 @@ func TestDefaultConfigApplied(t *testing.T) {
 	if server.config.ShutdownTimeout == 0 {
 		t.Fatal("expected default ShutdownTimeout to be set")
 	}
-	if server.config.ReadTimeout == 0 {
-		t.Fatal("expected default ReadTimeout to be set")
+	// Read and write timeouts are no longer defaulted here: configuration
+	// resolves them, and a zero that reaches this package is an operator asking
+	// for no deadline rather than an unset field.
+	if server.config.ReadTimeout != 0 {
+		t.Fatalf("expected ReadTimeout to stay unset, got %v", server.config.ReadTimeout)
 	}
-	if server.config.WriteTimeout == 0 {
-		t.Fatal("expected default WriteTimeout to be set")
+	if server.config.WriteTimeout != 0 {
+		t.Fatalf("expected WriteTimeout to stay unset, got %v", server.config.WriteTimeout)
 	}
 	if server.config.BufferSize == 0 {
 		t.Fatal("expected default BufferSize to be set")

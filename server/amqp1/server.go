@@ -26,7 +26,9 @@ type Config struct {
 	TLSConfig *tls.Config
 	Logger    *slog.Logger
 	// HandshakeTimeout bounds TCP/TLS, SASL, and AMQP Open. The deadline is
-	// cleared by the protocol connection after Open succeeds.
+	// cleared by the protocol connection after Open succeeds. Zero leaves the
+	// handshake unbounded; configuration supplies the default when the key is
+	// omitted.
 	HandshakeTimeout time.Duration
 	ShutdownTimeout  time.Duration
 	MaxConnections   int
@@ -49,9 +51,6 @@ func New(cfg Config, broker *amqpbroker.Broker) *Server {
 	}
 	if cfg.ShutdownTimeout == 0 {
 		cfg.ShutdownTimeout = 30 * time.Second
-	}
-	if cfg.HandshakeTimeout == 0 {
-		cfg.HandshakeTimeout = 10 * time.Second
 	}
 
 	var connSem chan struct{}
@@ -116,11 +115,15 @@ func (s *Server) runAcceptLoop(ctx, connCtx context.Context, listener net.Listen
 			if !s.tryAcquireSlot(ctx, conn) {
 				continue
 			}
-			if err := conn.SetDeadline(time.Now().Add(s.config.HandshakeTimeout)); err != nil {
-				s.config.Logger.Warn("failed to set AMQP handshake deadline", "remote", conn.RemoteAddr(), "error", err)
-				s.releaseSlot()
-				conn.Close()
-				continue
+			// A zero timeout is the operator asking for no handshake deadline;
+			// stamping time.Now() instead would fail every connection at once.
+			if s.config.HandshakeTimeout > 0 {
+				if err := conn.SetDeadline(time.Now().Add(s.config.HandshakeTimeout)); err != nil {
+					s.config.Logger.Warn("failed to set AMQP handshake deadline", "remote", conn.RemoteAddr(), "error", err)
+					s.releaseSlot()
+					conn.Close()
+					continue
+				}
 			}
 
 			if tcpConn, ok := conn.(*net.TCPConn); ok {

@@ -35,10 +35,15 @@ type Config struct {
 	// ReadTimeout bounds the pre-session phase of a connection: the TLS
 	// handshake, protocol version sniff, and CONNECT packet. Once the session
 	// starts it sets its own read deadlines from the negotiated keep-alive.
+	// Zero leaves the phase unbounded; configuration supplies the default when
+	// the key is omitted.
 	ReadTimeout time.Duration
 	// WriteTimeout bounds a single socket write for the life of the connection.
-	WriteTimeout     time.Duration
-	TCPKeepAlive     time.Duration
+	// Zero leaves writes without a deadline; configuration supplies the default
+	// when the key is omitted.
+	WriteTimeout time.Duration
+	TCPKeepAlive time.Duration
+	// MaxConnections caps concurrent connections. Zero means unlimited.
 	MaxConnections   int
 	BufferSize       int
 	DisableNoDelay   bool
@@ -78,12 +83,6 @@ func New(cfg Config, h *broker.Broker) *Server {
 	}
 	if cfg.ShutdownTimeout == 0 {
 		cfg.ShutdownTimeout = 30 * time.Second
-	}
-	if cfg.ReadTimeout == 0 {
-		cfg.ReadTimeout = 60 * time.Second
-	}
-	if cfg.WriteTimeout == 0 {
-		cfg.WriteTimeout = 60 * time.Second
 	}
 	if cfg.BufferSize == 0 {
 		cfg.BufferSize = 8192 // 8KB default for performance

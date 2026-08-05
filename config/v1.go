@@ -199,30 +199,33 @@ type listenersDocument struct {
 	AMQP1   []amqp1ListenerDocument   `yaml:"amqp1"`
 }
 
+// Limits and timeouts are pointers so that an omitted key takes the default
+// while an explicit 0 means unlimited. Collapsing the two would make "no cap"
+// unexpressible and hide which of the two an operator asked for.
 type mqttListenerDocument struct {
 	Address        string               `yaml:"address"`
 	Transport      string               `yaml:"transport"`
 	Versions       []string             `yaml:"versions"`
 	Path           string               `yaml:"path"`
 	AllowedOrigins []string             `yaml:"allowed_origins"`
-	MaxConnections int                  `yaml:"max_connections"`
-	ReadTimeout    time.Duration        `yaml:"read_timeout"`
-	WriteTimeout   time.Duration        `yaml:"write_timeout"`
+	MaxConnections *int                 `yaml:"max_connections"`
+	ReadTimeout    *time.Duration       `yaml:"read_timeout"`
+	WriteTimeout   *time.Duration       `yaml:"write_timeout"`
 	TLS            *listenerTLSDocument `yaml:"tls,omitempty"`
 }
 
 type amqp091ListenerDocument struct {
 	Address          string               `yaml:"address"`
 	Auth             string               `yaml:"auth"`
-	MaxConnections   int                  `yaml:"max_connections"`
-	HandshakeTimeout time.Duration        `yaml:"handshake_timeout"`
+	MaxConnections   *int                 `yaml:"max_connections"`
+	HandshakeTimeout *time.Duration       `yaml:"handshake_timeout"`
 	TLS              *listenerTLSDocument `yaml:"tls,omitempty"`
 }
 
 type amqp1ListenerDocument struct {
 	Address          string               `yaml:"address"`
-	MaxConnections   int                  `yaml:"max_connections"`
-	HandshakeTimeout time.Duration        `yaml:"handshake_timeout"`
+	MaxConnections   *int                 `yaml:"max_connections"`
+	HandshakeTimeout *time.Duration       `yaml:"handshake_timeout"`
 	TLS              *listenerTLSDocument `yaml:"tls,omitempty"`
 }
 
@@ -481,20 +484,20 @@ func marshalV1(cfg *Config) ([]byte, error) {
 		doc.Listeners.MQTT = append(doc.Listeners.MQTT, mqttListenerDocument{
 			Address: listener.Address, Transport: listener.Transport, Versions: listener.Versions,
 			Path: listener.Path, AllowedOrigins: listener.AllowedOrigins,
-			MaxConnections: listener.MaxConnections, ReadTimeout: listener.ReadTimeout,
-			WriteTimeout: listener.WriteTimeout, TLS: listenerTLSDocumentFromRuntime(listener.TLS),
+			MaxConnections: &listener.MaxConnections, ReadTimeout: &listener.ReadTimeout,
+			WriteTimeout: &listener.WriteTimeout, TLS: listenerTLSDocumentFromRuntime(listener.TLS),
 		})
 	}
 	for _, listener := range cfg.Listeners.AMQP091 {
 		doc.Listeners.AMQP091 = append(doc.Listeners.AMQP091, amqp091ListenerDocument{
-			Address: listener.Address, Auth: listener.Auth, MaxConnections: listener.MaxConnections,
-			HandshakeTimeout: listener.HandshakeTimeout, TLS: listenerTLSDocumentFromRuntime(listener.TLS),
+			Address: listener.Address, Auth: listener.Auth, MaxConnections: &listener.MaxConnections,
+			HandshakeTimeout: &listener.HandshakeTimeout, TLS: listenerTLSDocumentFromRuntime(listener.TLS),
 		})
 	}
 	for _, listener := range cfg.Listeners.AMQP1 {
 		doc.Listeners.AMQP1 = append(doc.Listeners.AMQP1, amqp1ListenerDocument{
-			Address: listener.Address, MaxConnections: listener.MaxConnections,
-			HandshakeTimeout: listener.HandshakeTimeout, TLS: listenerTLSDocumentFromRuntime(listener.TLS),
+			Address: listener.Address, MaxConnections: &listener.MaxConnections,
+			HandshakeTimeout: &listener.HandshakeTimeout, TLS: listenerTLSDocumentFromRuntime(listener.TLS),
 		})
 	}
 	for _, listener := range cfg.Experimental.HTTP.Listeners {
@@ -539,6 +542,21 @@ func (c *Config) SecurityWarnings() []string {
 		warnings = append(warnings, fmt.Sprintf(
 			"admin.address %q is not loopback and the admin API is unauthenticated: any client that can reach it may reload configuration, delete or purge queues, and disconnect sessions; bind it to 127.0.0.1 and reach it through a trusted proxy",
 			c.Admin.Address))
+	}
+	// A handshake deadline is the only bound on an unauthenticated connection
+	// before it identifies itself, so disabling it lets idle peers hold listener
+	// slots indefinitely. It is the operator's call, but not a quiet one.
+	for i, listener := range c.Listeners.AMQP091 {
+		if listener.HandshakeTimeout == 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"listeners.amqp091[%d].handshake_timeout is 0, so an unauthenticated peer may hold a connection slot indefinitely", i))
+		}
+	}
+	for i, listener := range c.Listeners.AMQP1 {
+		if listener.HandshakeTimeout == 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"listeners.amqp1[%d].handshake_timeout is 0, so an unauthenticated peer may hold a connection slot indefinitely", i))
+		}
 	}
 	return warnings
 }
@@ -788,10 +806,10 @@ func normalizeListeners(cfg *Config, listeners listenersDocument) error {
 		if err != nil {
 			return err
 		}
-		if listener.MaxConnections < 0 {
+		if negative(listener.MaxConnections) {
 			return fmt.Errorf("%s.max_connections cannot be negative", path)
 		}
-		if listener.ReadTimeout < 0 || listener.WriteTimeout < 0 {
+		if negative(listener.ReadTimeout) || negative(listener.WriteTimeout) {
 			return fmt.Errorf("%s timeouts cannot be negative", path)
 		}
 		tlsConfig, err := normalizeListenerTLS(path+".tls", listener.TLS)
@@ -808,9 +826,9 @@ func normalizeListeners(cfg *Config, listeners listenersDocument) error {
 		cfg.Listeners.MQTT = append(cfg.Listeners.MQTT, MQTTListenerConfig{
 			Address: listener.Address, Transport: listener.Transport, Versions: versions,
 			Path: pathValue, AllowedOrigins: listener.AllowedOrigins,
-			MaxConnections: defaultInt(listener.MaxConnections, 10000),
-			ReadTimeout:    defaultDuration(listener.ReadTimeout, 60*time.Second),
-			WriteTimeout:   defaultDuration(listener.WriteTimeout, 60*time.Second), TLS: tlsConfig,
+			MaxConnections: orDefault(listener.MaxConnections, defaultMaxConnections),
+			ReadTimeout:    orDefault(listener.ReadTimeout, defaultListenerTimeout),
+			WriteTimeout:   orDefault(listener.WriteTimeout, defaultListenerTimeout), TLS: tlsConfig,
 		})
 	}
 	for i, listener := range listeners.AMQP091 {
@@ -821,7 +839,7 @@ func normalizeListeners(cfg *Config, listeners listenersDocument) error {
 		if listener.Auth != AMQP091AuthExternal && listener.Auth != AMQP091AuthLocal {
 			return fmt.Errorf("%s.auth must be %q or %q", path, AMQP091AuthExternal, AMQP091AuthLocal)
 		}
-		if listener.MaxConnections < 0 || listener.HandshakeTimeout < 0 {
+		if negative(listener.MaxConnections) || negative(listener.HandshakeTimeout) {
 			return fmt.Errorf("%s limits and timeouts cannot be negative", path)
 		}
 		tlsConfig, err := normalizeListenerTLS(path+".tls", listener.TLS)
@@ -833,8 +851,8 @@ func normalizeListeners(cfg *Config, listeners listenersDocument) error {
 		}
 		cfg.Listeners.AMQP091 = append(cfg.Listeners.AMQP091, AMQP091ListenerConfig{
 			Address: listener.Address, Auth: listener.Auth,
-			MaxConnections:   defaultInt(listener.MaxConnections, 10000),
-			HandshakeTimeout: defaultDuration(listener.HandshakeTimeout, 10*time.Second), TLS: tlsConfig,
+			MaxConnections:   orDefault(listener.MaxConnections, defaultMaxConnections),
+			HandshakeTimeout: orDefault(listener.HandshakeTimeout, defaultHandshakeTimeout), TLS: tlsConfig,
 		})
 	}
 	for i, listener := range listeners.AMQP1 {
@@ -842,7 +860,7 @@ func normalizeListeners(cfg *Config, listeners listenersDocument) error {
 		if err := validateAddress(path+".address", listener.Address, seenAddresses); err != nil {
 			return err
 		}
-		if listener.MaxConnections < 0 || listener.HandshakeTimeout < 0 {
+		if negative(listener.MaxConnections) || negative(listener.HandshakeTimeout) {
 			return fmt.Errorf("%s limits and timeouts cannot be negative", path)
 		}
 		tlsConfig, err := normalizeListenerTLS(path+".tls", listener.TLS)
@@ -850,8 +868,8 @@ func normalizeListeners(cfg *Config, listeners listenersDocument) error {
 			return err
 		}
 		cfg.Listeners.AMQP1 = append(cfg.Listeners.AMQP1, AMQP1ListenerConfig{
-			Address: listener.Address, MaxConnections: defaultInt(listener.MaxConnections, 10000),
-			HandshakeTimeout: defaultDuration(listener.HandshakeTimeout, 10*time.Second), TLS: tlsConfig,
+			Address: listener.Address, MaxConnections: orDefault(listener.MaxConnections, defaultMaxConnections),
+			HandshakeTimeout: orDefault(listener.HandshakeTimeout, defaultHandshakeTimeout), TLS: tlsConfig,
 		})
 	}
 	if len(cfg.Listeners.MQTT)+len(cfg.Listeners.AMQP091)+len(cfg.Listeners.AMQP1) == 0 {
@@ -1156,18 +1174,20 @@ func validateAddress(path, address string, seen map[string]string) error {
 	return nil
 }
 
-func defaultInt(value, fallback int) int {
-	if value == 0 {
-		return fallback
-	}
-	return value
+// negative reports whether a configured value is below zero. Unset and zero are
+// both fine: zero is the explicit "unlimited" or "no deadline" setting.
+func negative[T int | time.Duration](value *T) bool {
+	return value != nil && *value < 0
 }
 
-func defaultDuration(value, fallback time.Duration) time.Duration {
-	if value == 0 {
+// orDefault returns the configured value, or the fallback when the key was
+// omitted. An explicit zero is preserved: it means unlimited for a limit and no
+// deadline for a timeout.
+func orDefault[T any](value *T, fallback T) T {
+	if value == nil {
 		return fallback
 	}
-	return value
+	return *value
 }
 
 func validPort(port int) bool {

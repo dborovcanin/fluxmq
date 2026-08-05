@@ -38,6 +38,12 @@ const (
 	defaultAdminAddress  = "127.0.0.1:8082"
 	defaultHealthAddress = "127.0.0.1:8081"
 
+	// Listener defaults, applied only when the key is omitted. An explicit 0
+	// means unlimited connections or no deadline.
+	defaultMaxConnections   = 10000
+	defaultListenerTimeout  = 60 * time.Second
+	defaultHandshakeTimeout = 10 * time.Second
+
 	logLevelDebug = "debug"
 	logLevelInfo  = "info"
 	logLevelWarn  = "warn"

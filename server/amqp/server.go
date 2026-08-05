@@ -49,11 +49,8 @@ func New(cfg Config, b *broker.Broker) *Server {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	if cfg.HandshakeTimeout <= 0 {
+	if cfg.HandshakeTimeout == 0 && cfg.TLSHandshakeTimeout != 0 {
 		cfg.HandshakeTimeout = cfg.TLSHandshakeTimeout
-	}
-	if cfg.HandshakeTimeout <= 0 {
-		cfg.HandshakeTimeout = 10 * time.Second
 	}
 	var connSem chan struct{}
 	if cfg.MaxConnections > 0 {
@@ -151,10 +148,14 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	defer s.releaseConnectionSlot()
 	defer conn.Close()
 	defer connguard.Recover(s.cfg.Logger, "amqp091", conn.RemoteAddr().String())
-	deadline := time.Now().Add(s.cfg.HandshakeTimeout)
-	if err := conn.SetDeadline(deadline); err != nil {
-		s.cfg.Logger.Warn("AMQP 0.9.1 handshake deadline failed", "remote", conn.RemoteAddr().String(), "error", err)
-		return
+	// A zero timeout is the operator asking for no handshake deadline; stamping
+	// time.Now() instead would fail every connection at once.
+	if s.cfg.HandshakeTimeout > 0 {
+		deadline := time.Now().Add(s.cfg.HandshakeTimeout)
+		if err := conn.SetDeadline(deadline); err != nil {
+			s.cfg.Logger.Warn("AMQP 0.9.1 handshake deadline failed", "remote", conn.RemoteAddr().String(), "error", err)
+			return
+		}
 	}
 	if tlsConn, ok := conn.(*tls.Conn); ok {
 		if err := tlsConn.HandshakeContext(ctx); err != nil {

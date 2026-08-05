@@ -60,11 +60,15 @@ type Config struct {
 	MaxPacketSize int
 	// ReadTimeout bounds the pre-session phase of an upgraded connection: the
 	// protocol version sniff and the CONNECT packet. Once the session starts it
-	// sets its own read deadlines from the negotiated keep-alive.
+	// sets its own read deadlines from the negotiated keep-alive. Zero leaves
+	// the phase unbounded; configuration supplies the default when the key is
+	// omitted.
 	ReadTimeout time.Duration
 	// WriteTimeout bounds a single socket write for the life of the connection.
+	// Zero leaves writes without a deadline; configuration supplies the default
+	// when the key is omitted.
 	WriteTimeout time.Duration
-	// MaxConnections caps concurrently upgraded connections. 0 means unlimited.
+	// MaxConnections caps concurrently upgraded connections. Zero means unlimited.
 	MaxConnections int
 }
 
@@ -92,12 +96,6 @@ func New(cfg Config, b *broker.Broker, logger *slog.Logger) *Server {
 
 	if cfg.Path == "" {
 		cfg.Path = defaultPath
-	}
-	if cfg.ReadTimeout == 0 {
-		cfg.ReadTimeout = 60 * time.Second
-	}
-	if cfg.WriteTimeout == 0 {
-		cfg.WriteTimeout = 60 * time.Second
 	}
 
 	s := &Server{
