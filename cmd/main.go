@@ -455,6 +455,9 @@ func main() {
 		os.Exit(1)
 	}
 	if command.validate {
+		for _, warning := range cfg.SecurityWarnings() {
+			fmt.Fprintf(os.Stdout, "warning: %s\n", warning)
+		}
 		fmt.Fprintln(os.Stdout, "configuration valid")
 		return
 	}
@@ -485,6 +488,9 @@ func main() {
 	slog.SetDefault(logger)
 	if cfg.Development {
 		slog.Warn("Development mode: no configuration file supplied; using loopback-only listeners and in-memory storage")
+	}
+	for _, warning := range cfg.SecurityWarnings() {
+		slog.Warn(warning)
 	}
 
 	localPrincipalStore, err := localauth.New(cfg.Auth.LocalPrincipals)
@@ -580,6 +586,13 @@ func main() {
 		ec, err := cluster.NewEtcdCluster(etcdCfg, store, logger)
 		if err != nil {
 			slog.Error("Failed to initialize etcd cluster", "error", err)
+			os.Exit(1)
+		}
+		// Pin the data directory only now that the node has formed its cluster.
+		// Recording before startup would tie an empty directory to a membership
+		// that never existed, and then refuse a corrected member map.
+		if err := cluster.RecordStaticManifest(cfg.Cluster.Etcd.DataDir, cfg.Cluster.ManifestFingerprint); err != nil {
+			slog.Error("Failed to record static cluster membership", "error", err)
 			os.Exit(1)
 		}
 		etcdCluster = ec

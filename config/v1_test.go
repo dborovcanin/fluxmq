@@ -52,7 +52,7 @@ func TestLoadV1StrictPaths(t *testing.T) {
 		want string
 	}{
 		{name: "version required", body: strings.Replace(minimalV1, "version: 1\n", "", 1), want: "version is required"},
-		{name: "version exact", body: strings.Replace(minimalV1, "version: 1", "version: 2", 1), want: "version must be 1"},
+		{name: "version exact", body: strings.Replace(minimalV1, "version: 1", "version: 2", 1), want: "unsupported configuration version 2"},
 		{name: "old server key", body: minimalV1 + "server:\n  tcp: {}\n", want: "server: unknown field"},
 		{name: "unknown nested key", body: strings.Replace(minimalV1, "transport: tcp", "transprot: tcp", 1), want: "listeners.mqtt[0].transprot: unknown field"},
 		{name: "duplicate nested key", body: strings.Replace(minimalV1, "      transport: tcp\n", "      transport: tcp\n      transport: websocket\n", 1), want: "listeners.mqtt[0].transport: duplicate field"},
@@ -267,6 +267,152 @@ func FuzzV1ConfigurationDecoder(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		_, _ = loadV1(data, LoadOptions{})
 	})
+}
+
+// A persistent broker resolves every durable path under storage.data_dir, so
+// an unset or relative root would scatter data across the process working
+// directory rather than the operator's chosen volume.
+func TestLoadV1BadgerRequiresAbsoluteDataDir(t *testing.T) {
+	withStorage := func(storage string) string {
+		return strings.Replace(minimalV1, "storage:\n  type: memory", storage, 1)
+	}
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "missing",
+			body: withStorage("storage:\n  type: badger"),
+			want: "storage.data_dir is required when storage.type is badger",
+		},
+		{
+			name: "relative",
+			body: withStorage("storage:\n  type: badger\n  data_dir: ./data"),
+			want: `storage.data_dir must be an absolute path, got "./data"`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := loadTestYAMLError(t, test.body, LoadOptions{})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadWithOptions() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	cfg := loadTestYAML(t, withStorage("storage:\n  type: badger\n  data_dir: /var/lib/fluxmq"), LoadOptions{})
+	if cfg.Storage.BadgerDir != "/var/lib/fluxmq/broker" {
+		t.Fatalf("BadgerDir = %q, want it derived from data_dir", cfg.Storage.BadgerDir)
+	}
+}
+
+// The version selects the schema, so an unsupported one must be reported as
+// such rather than as whatever unknown keys that version happens to add.
+func TestLoadV1ReportsUnsupportedVersionBeforeUnknownFields(t *testing.T) {
+	body := "version: 2\nlisteners:\n  mqtt: []\n  quic: []\nstorage:\n  type: memory\n"
+	_, err := loadTestYAMLError(t, body, LoadOptions{})
+	if err == nil || !strings.Contains(err.Error(), "unsupported configuration version 2") {
+		t.Fatalf("LoadWithOptions() error = %v, want an unsupported-version failure", err)
+	}
+	if strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("a future version's keys were judged against the v1 schema: %v", err)
+	}
+}
+
+// Reserved queues back protocol-level addressing rather than an operator's own
+// workload, so omitting them — or writing an empty list — must not delete them.
+func TestLoadV1KeepsReservedQueues(t *testing.T) {
+	reserved := ReservedQueues()[0].Name
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "omitted", body: minimalV1},
+		{name: "empty list", body: minimalV1 + "queues: []\n"},
+		{name: "other queues only", body: minimalV1 + "queues:\n  - name: telemetry\n    topics: [\"m/#\"]\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := loadTestYAML(t, test.body, LoadOptions{})
+			index := slices.IndexFunc(cfg.Queues, func(q QueueConfig) bool { return q.Name == reserved })
+			if index < 0 {
+				t.Fatalf("reserved queue %q was dropped: %+v", reserved, cfg.Queues)
+			}
+			if !cfg.Queues[index].Reserved {
+				t.Fatalf("queue %q lost its reserved flag", reserved)
+			}
+		})
+	}
+
+	t.Run("retuned by the operator", func(t *testing.T) {
+		body := minimalV1 + "queues:\n  - name: " + reserved + "\n    topics: [\"$queue/#\"]\n    limits:\n      max_depth: 5\n"
+		cfg := loadTestYAML(t, body, LoadOptions{})
+		index := slices.IndexFunc(cfg.Queues, func(q QueueConfig) bool { return q.Name == reserved })
+		if index < 0 {
+			t.Fatalf("reserved queue %q was dropped", reserved)
+		}
+		if !cfg.Queues[index].Reserved {
+			t.Fatal("an operator-declared reserved queue must stay reserved")
+		}
+		if cfg.Queues[index].Limits.MaxDepth != 5 {
+			t.Fatalf("operator tuning was ignored: %+v", cfg.Queues[index].Limits)
+		}
+	})
+}
+
+// etcd persists the peer URLs it formed with, so the manifest fingerprint has
+// to cover everything those URLs are built from. A fingerprint over the member
+// map alone would let a changed port or a flip to plaintext pass the check and
+// then disagree with etcd's own recorded membership.
+func TestLoadV1ClusterFingerprintCoversDerivedPeerURLs(t *testing.T) {
+	fingerprint := func(t *testing.T, ports, extra string) string {
+		t.Helper()
+		body := strings.Replace(minimalV1, "storage:\n  type: memory", "storage:\n  type: badger\n  data_dir: /var/lib/fluxmq", 1)
+		body += "cluster:\n  members:\n    node1: node1.internal\n    node2: node2.internal\n" + ports + extra
+		return loadTestYAML(t, body, LoadOptions{NodeID: testClusterNode1}).Cluster.ManifestFingerprint
+	}
+
+	tls := "  tls:\n    ca_file: /run/ca\n    cert_file: /run/cert\n    key_file: /run/key\n"
+	base := fingerprint(t, "  ports:\n    etcd_peer: 2380\n", tls)
+
+	if same := fingerprint(t, "  ports:\n    etcd_peer: 2380\n", tls); same != base {
+		t.Fatal("fingerprint is not stable for an unchanged manifest")
+	}
+	if changed := fingerprint(t, "  ports:\n    etcd_peer: 12380\n", tls); changed == base {
+		t.Fatal("changing cluster.ports.etcd_peer left the fingerprint unchanged")
+	}
+	if insecure := fingerprint(t, "  ports:\n    etcd_peer: 2380\n", "  allow_insecure: true\n"); insecure == base {
+		t.Fatal("dropping cluster TLS left the fingerprint unchanged, but the peer URL scheme changed")
+	}
+}
+
+// The admin API is unauthenticated, so binding it beyond loopback is stated
+// plainly rather than left for an operator to notice.
+func TestSecurityWarningsCoverAdminExposure(t *testing.T) {
+	tests := []struct {
+		name    string
+		address string
+		want    bool
+	}{
+		{name: "all interfaces", address: ":8082", want: true},
+		{name: "explicit external", address: "10.0.0.4:8082", want: true},
+		{name: "loopback IPv4", address: defaultAdminAddress},
+		{name: "loopback IPv6", address: "[::1]:8082"},
+		{name: "localhost", address: "localhost:8082"},
+		{name: "disabled", address: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Admin.Address = test.address
+			warnings := cfg.SecurityWarnings()
+			if got := len(warnings) > 0; got != test.want {
+				t.Fatalf("SecurityWarnings() = %v, want warning=%v", warnings, test.want)
+			}
+		})
+	}
 }
 
 func loadTestYAML(t *testing.T, body string, options LoadOptions) *Config {

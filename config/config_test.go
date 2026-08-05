@@ -35,7 +35,7 @@ func TestDefault(t *testing.T) {
 	if listener.Address != "127.0.0.1:1883" || listener.ProtocolMode() != ProtocolModeAuto {
 		t.Fatalf("unexpected development listener: %+v", listener)
 	}
-	if cfg.Admin.Address != "127.0.0.1:8082" || cfg.Health.Address != "127.0.0.1:8081" {
+	if cfg.Admin.Address != defaultAdminAddress || cfg.Health.Address != defaultHealthAddress {
 		t.Fatalf("development control endpoints must be loopback-only: admin=%q health=%q", cfg.Admin.Address, cfg.Health.Address)
 	}
 

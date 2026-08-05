@@ -10,16 +10,43 @@ import (
 	"testing"
 )
 
-func TestVerifyStaticManifest(t *testing.T) {
+func TestVerifyAndRecordStaticManifest(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "node1", "etcd")
-	if err := VerifyStaticManifest(dataDir, strings.Repeat("a", 64)); err != nil {
+	first, second := strings.Repeat("a", 64), strings.Repeat("b", 64)
+
+	if err := VerifyStaticManifest(dataDir, first); err != nil {
 		t.Fatalf("first VerifyStaticManifest() error = %v", err)
 	}
-	if err := VerifyStaticManifest(dataDir, strings.Repeat("a", 64)); err != nil {
+	if err := RecordStaticManifest(dataDir, first); err != nil {
+		t.Fatalf("RecordStaticManifest() error = %v", err)
+	}
+	if err := VerifyStaticManifest(dataDir, first); err != nil {
 		t.Fatalf("same manifest was rejected: %v", err)
 	}
-	if err := VerifyStaticManifest(dataDir, strings.Repeat("b", 64)); err == nil || !strings.Contains(err.Error(), "membership differs") {
+	if err := RecordStaticManifest(dataDir, first); err != nil {
+		t.Fatalf("re-recording the same manifest failed: %v", err)
+	}
+	if err := VerifyStaticManifest(dataDir, second); err == nil || !strings.Contains(err.Error(), "membership differs") {
 		t.Fatalf("changed membership error = %v", err)
+	}
+	if err := RecordStaticManifest(dataDir, second); err == nil || !strings.Contains(err.Error(), "membership differs") {
+		t.Fatalf("recording a changed membership error = %v", err)
+	}
+}
+
+// Verification must not write. A node whose etcd fails to start leaves no pin
+// behind, so a corrected member map still starts on the same directory.
+func TestVerifyStaticManifestDoesNotRecord(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "node1", "etcd")
+
+	if err := VerifyStaticManifest(dataDir, strings.Repeat("a", 64)); err != nil {
+		t.Fatalf("VerifyStaticManifest() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(dataDir), staticManifestFile)); !os.IsNotExist(err) {
+		t.Fatalf("verification wrote a manifest: %v", err)
+	}
+	if err := VerifyStaticManifest(dataDir, strings.Repeat("b", 64)); err != nil {
+		t.Fatalf("a corrected member map was refused after a failed start: %v", err)
 	}
 }
 

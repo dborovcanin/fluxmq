@@ -33,6 +33,11 @@ const (
 	defaultWSPath = "/mqtt"
 	defaultNodeID = "broker-1"
 
+	// Development defaults for the control endpoints, which stay on loopback
+	// because neither carries authentication.
+	defaultAdminAddress  = "127.0.0.1:8082"
+	defaultHealthAddress = "127.0.0.1:8081"
+
 	logLevelDebug = "debug"
 	logLevelInfo  = "info"
 	logLevelWarn  = "warn"
@@ -973,35 +978,59 @@ func defaultRuntime() *Config {
 		QueueManager: QueueManagerConfig{
 			AutoCommitInterval: 5 * time.Second,
 		},
-		Queues: []QueueConfig{
-			{
-				Name:     protocolMQTT,
-				Topics:   []string{"$queue/#"},
-				Reserved: true,
-				Limits: QueueLimits{
-					MaxMessageSize: 10 * 1024 * 1024, // 10MB
-					MaxDepth:       100000,
-					MessageTTL:     7 * 24 * time.Hour,
-				},
-				Retry: QueueRetry{
-					MaxRetries:     10,
-					InitialBackoff: 5 * time.Second,
-					MaxBackoff:     5 * time.Minute,
-					Multiplier:     2.0,
-				},
-				DLQ: QueueDLQ{
-					Enabled: true,
-				},
-				Replication: QueueReplication{
-					Enabled:           false,
-					ReplicationFactor: 3,
-					Mode:              queueModeSync,
-					MinInSyncReplicas: 2,
-					AckTimeout:        5 * time.Second,
-				},
+		Queues: ReservedQueues(),
+	}
+}
+
+// ReservedQueues returns the broker-owned queues that must exist on every node.
+// They back protocol-level addressing rather than an operator's own workload,
+// so the admin API refuses to delete them and the loader refuses to drop them.
+func ReservedQueues() []QueueConfig {
+	return []QueueConfig{
+		{
+			Name:     protocolMQTT,
+			Topics:   []string{"$queue/#"},
+			Reserved: true,
+			Limits: QueueLimits{
+				MaxMessageSize: 10 * 1024 * 1024, // 10MB
+				MaxDepth:       100000,
+				MessageTTL:     7 * 24 * time.Hour,
+			},
+			Retry: QueueRetry{
+				MaxRetries:     10,
+				InitialBackoff: 5 * time.Second,
+				MaxBackoff:     5 * time.Minute,
+				Multiplier:     2.0,
+			},
+			DLQ: QueueDLQ{
+				Enabled: true,
+			},
+			Replication: QueueReplication{
+				Enabled:           false,
+				ReplicationFactor: 3,
+				Mode:              queueModeSync,
+				MinInSyncReplicas: 2,
+				AckTimeout:        5 * time.Second,
 			},
 		},
 	}
+}
+
+// applyReservedQueues guarantees every reserved queue is present. An operator
+// may retune one by declaring it under its own name, but omitting it — or
+// writing an empty queues list — must not delete it, and it stays reserved
+// however it was declared.
+func applyReservedQueues(queues []QueueConfig) []QueueConfig {
+	result := slices.Clone(queues)
+	for _, reserved := range ReservedQueues() {
+		index := slices.IndexFunc(result, func(q QueueConfig) bool { return q.Name == reserved.Name })
+		if index < 0 {
+			result = append(result, reserved)
+			continue
+		}
+		result[index].Reserved = true
+	}
+	return result
 }
 
 // Load loads a strict v1 configuration. Node identity, when needed, is read

@@ -12,8 +12,11 @@ listeners:
   amqp1:
     - address: ":5672"
 
+# The admin API can reload configuration, delete and purge queues, and
+# disconnect sessions, and it has no authentication yet. Keep it on loopback
+# and reach it through a trusted proxy.
 admin:
-  address: ":8082"
+  address: "127.0.0.1:8082"
 
 health:
   enabled: true

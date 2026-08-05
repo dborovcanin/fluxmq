@@ -380,8 +380,8 @@ func Default() *Config {
 			ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second,
 		}},
 	}
-	cfg.Admin = AdminConfig{Address: "127.0.0.1:8082"}
-	cfg.Health = HealthConfig{Enabled: true, Address: "127.0.0.1:8081"}
+	cfg.Admin = AdminConfig{Address: defaultAdminAddress}
+	cfg.Health = HealthConfig{Enabled: true, Address: defaultHealthAddress}
 	cfg.Telemetry = TelemetryConfig{
 		Endpoint: "127.0.0.1:4317", ServiceName: "fluxmq", ServiceVersion: "1.0.0",
 		MetricsEnabled: true, TraceSampleRate: 0.1,
@@ -406,11 +406,18 @@ func loadV1(data []byte, options LoadOptions) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	// The version decides which schema the rest of the file is read against, so
+	// it is settled before any field is judged. Checking it later would report a
+	// future version's new keys as unknown fields and never mention the version.
+	version, err := documentVersion(node)
+	if err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+	if version != VersionV1 {
+		return nil, fmt.Errorf("invalid configuration: unsupported configuration version %d; this build supports version %d", version, VersionV1)
+	}
 	if err := validateStrictNode(node, reflect.TypeFor[document](), ""); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
-	}
-	if !mappingHasKey(node, "version") {
-		return nil, fmt.Errorf("invalid configuration: version is required and must be 1")
 	}
 
 	doc := defaultDocument()
@@ -418,9 +425,6 @@ func loadV1(data []byte, options LoadOptions) (*Config, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	if err := decoder.Decode(&doc); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
-	}
-	if doc.Version != VersionV1 {
-		return nil, fmt.Errorf("invalid configuration: version must be 1")
 	}
 	if doc.Listeners == nil {
 		return nil, fmt.Errorf("invalid configuration: listeners is required")
@@ -522,16 +526,61 @@ func listenerTLSDocumentFromRuntime(cfg *mqtttls.Config) *listenerTLSDocument {
 	}
 }
 
-func mappingHasKey(node *yaml.Node, key string) bool {
-	if node.Kind != yaml.MappingNode {
+// SecurityWarnings reports configured exposures that are legal but that an
+// operator should see stated plainly at startup and from `config validate`.
+// They are warnings rather than errors because refusing them outright would
+// break deployments that reach the API over a trusted network.
+func (c *Config) SecurityWarnings() []string {
+	var warnings []string
+	// The admin API can reload configuration, delete queues, purge and truncate
+	// them, and disconnect sessions, and it has no authentication yet. Binding
+	// it beyond loopback publishes all of that to whoever can route to the host.
+	if c.Admin.Address != "" && !isLoopbackAddress(c.Admin.Address) {
+		warnings = append(warnings, fmt.Sprintf(
+			"admin.address %q is not loopback and the admin API is unauthenticated: any client that can reach it may reload configuration, delete or purge queues, and disconnect sessions; bind it to 127.0.0.1 and reach it through a trusted proxy",
+			c.Admin.Address))
+	}
+	return warnings
+}
+
+// isLoopbackAddress reports whether a host:port listen address accepts
+// connections only from the local host. A missing host means every interface.
+func isLoopbackAddress(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
 		return false
 	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			return true
-		}
+	if host == "" {
+		return false
 	}
-	return false
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// documentVersion reads the schema version out of the raw document, ahead of
+// any schema-dependent decoding.
+func documentVersion(node *yaml.Node) (int, error) {
+	if node.Kind != yaml.MappingNode {
+		return 0, errors.New("configuration must be a mapping")
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value != "version" {
+			continue
+		}
+		value := node.Content[i+1]
+		if value.Kind != yaml.ScalarNode {
+			return 0, errors.New("version must be an integer")
+		}
+		version, err := strconv.Atoi(value.Value)
+		if err != nil {
+			return 0, fmt.Errorf("version must be an integer, got %q", value.Value)
+		}
+		return version, nil
+	}
+	return 0, fmt.Errorf("version is required and must be %d", VersionV1)
 }
 
 func decodeYAMLDocument(data []byte) (*yaml.Node, error) {
@@ -660,7 +709,7 @@ func normalizeDocument(doc document, options LoadOptions) (*Config, error) {
 	cfg.Webhook = doc.Webhook
 	cfg.RateLimit = doc.RateLimit
 	cfg.QueueManager = doc.QueueManager
-	cfg.Queues = doc.Queues
+	cfg.Queues = applyReservedQueues(doc.Queues)
 	cfg.Auth = doc.Auth
 	cfg.Hooks = doc.Hooks
 	cfg.ShutdownTimeout = doc.ShutdownTimeout
@@ -672,6 +721,15 @@ func normalizeDocument(doc document, options LoadOptions) (*Config, error) {
 		cfg.Storage.DataDir = ""
 	}
 	if cfg.Storage.Type == storageTypeBadger {
+		// A persistent broker resolves every durable path under this root, so
+		// leaving it unset or relative would scatter data across whatever
+		// directory the process happened to start in.
+		if cfg.Storage.DataDir == "" {
+			return nil, errors.New("storage.data_dir is required when storage.type is badger")
+		}
+		if !filepath.IsAbs(cfg.Storage.DataDir) {
+			return nil, fmt.Errorf("storage.data_dir must be an absolute path, got %q", doc.Storage.DataDir)
+		}
 		cfg.Storage.BadgerDir = filepath.Join(cfg.Storage.DataDir, "broker")
 	}
 
@@ -1007,7 +1065,7 @@ func normalizeCluster(cfg *Config, cluster clusterDocument, nodeID string) error
 	cfg.Cluster.Ports = ports
 	cfg.Cluster.TLS = tlsConfig
 	cfg.Cluster.AllowInsecure = cluster.AllowInsecure
-	cfg.Cluster.ManifestFingerprint = clusterFingerprint(cluster.Members)
+	cfg.Cluster.ManifestFingerprint = clusterFingerprint(initialMembers)
 	cfg.Cluster.Etcd = EtcdConfig{
 		DataDir: filepath.Join(nodeDataDir, "etcd"), BindAddr: net.JoinHostPort("0.0.0.0", strconv.Itoa(ports.EtcdPeer)),
 		AdvertiseAddr: net.JoinHostPort(localHost, strconv.Itoa(ports.EtcdPeer)),
@@ -1124,17 +1182,16 @@ func cloneStringMap(source map[string]string) map[string]string {
 	return result
 }
 
-func clusterFingerprint(members map[string]string) string {
-	ids := make([]string, 0, len(members))
-	for id := range members {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+// clusterFingerprint pins a data directory to the etcd peer URLs that formed
+// it. etcd persists those URLs, so the fingerprint must cover everything they
+// are built from — member IDs, hosts, the peer port, and the scheme that
+// cluster.tls or cluster.allow_insecure selects. Hashing only the member map
+// would let a changed port or a flip to plaintext pass the check and then
+// disagree with etcd's own recorded membership.
+func clusterFingerprint(initialMembers []string) string {
 	hash := sha256.New()
-	for _, id := range ids {
-		_, _ = io.WriteString(hash, id)
-		_, _ = io.WriteString(hash, "\x00")
-		_, _ = io.WriteString(hash, members[id])
+	for _, member := range initialMembers {
+		_, _ = io.WriteString(hash, member)
 		_, _ = io.WriteString(hash, "\n")
 	}
 	return hex.EncodeToString(hash.Sum(nil))
