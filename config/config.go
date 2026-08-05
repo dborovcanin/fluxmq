@@ -703,64 +703,66 @@ type LogConfig struct {
 
 // StorageConfig holds storage backend configuration.
 type StorageConfig struct {
-	Type string `yaml:"type"` // memory, badger
+	Type string // memory, badger
 	// DataDir is the v1 storage root. BadgerDir remains the normalized broker
 	// database directory consumed by the storage implementation.
-	DataDir string `yaml:"-"`
+	DataDir string
 
 	// BadgerDB settings
-	BadgerDir  string `yaml:"badger_dir"`
-	SyncWrites bool   `yaml:"sync_writes"`
+	BadgerDir  string
+	SyncWrites bool
 
 	// RecoverOnStartup runs segment recovery before loading queues.
 	// Corrupted segments are truncated at the last valid batch and indexes
 	// are rebuilt. Disabled by default to avoid unexpected data loss.
-	RecoverOnStartup bool `yaml:"recover_on_startup"`
+	RecoverOnStartup bool
 }
 
-// ClusterConfig holds clustering configuration.
+// ClusterConfig holds the clustering topology derived from the shared static
+// manifest. Only the manifest fields below are operator-facing; the etcd,
+// transport, and raft sections are computed by normalization.
 type ClusterConfig struct {
-	Enabled             bool               `yaml:"enabled"`
-	NodeID              string             `yaml:"node_id"`
-	Members             map[string]string  `yaml:"-"`
-	Ports               ClusterPortsConfig `yaml:"-"`
-	TLS                 ClusterTLSConfig   `yaml:"-"`
-	AllowInsecure       bool               `yaml:"-"`
-	ManifestFingerprint string             `yaml:"-"`
+	Enabled             bool
+	NodeID              string
+	Members             map[string]string
+	Ports               ClusterPortsConfig
+	TLS                 ClusterTLSConfig
+	AllowInsecure       bool
+	ManifestFingerprint string
 
 	// Embedded etcd settings
-	Etcd EtcdConfig `yaml:"etcd"`
+	Etcd EtcdConfig
 
 	// Inter-broker transport
-	Transport TransportConfig `yaml:"transport"`
+	Transport TransportConfig
 
 	// Raft replication for queue data
-	Raft RaftConfig `yaml:"raft"`
+	Raft RaftConfig
 }
 
 // RaftConfig holds Raft replication configuration for queue data.
 type RaftConfig struct {
-	Enabled             bool              `yaml:"enabled"`
-	AutoProvisionGroups bool              `yaml:"auto_provision_groups"` // Dynamically provision groups not listed in `groups`
-	ReplicationFactor   int               `yaml:"replication_factor"`    // Number of replicas per partition (default: 3)
-	SyncMode            bool              `yaml:"sync_mode"`             // true=wait for quorum, false=async
-	MinInSyncReplicas   int               `yaml:"min_in_sync_replicas"`
-	AckTimeout          time.Duration     `yaml:"ack_timeout"`
-	WritePolicy         string            `yaml:"write_policy"`      // local, reject, forward
-	DistributionMode    string            `yaml:"distribution_mode"` // forward, replicate
-	BindAddr            string            `yaml:"bind_addr"`         // Base address for Raft (e.g., "127.0.0.1:7100")
-	DataDir             string            `yaml:"data_dir"`          // Directory for Raft data
-	Peers               map[string]string `yaml:"peers"`             // Map of nodeID -> raft base address
+	Enabled             bool
+	AutoProvisionGroups bool // Dynamically provision groups not listed in `groups`
+	ReplicationFactor   int  // Number of replicas per partition (default: 3)
+	SyncMode            bool // true=wait for quorum, false=async
+	MinInSyncReplicas   int
+	AckTimeout          time.Duration
+	WritePolicy         string            // local, reject, forward
+	DistributionMode    string            // forward, replicate
+	BindAddr            string            // Base address for Raft (e.g., "127.0.0.1:7100")
+	DataDir             string            // Directory for Raft data
+	Peers               map[string]string // Map of nodeID -> raft base address
 
 	// Raft tuning
-	HeartbeatTimeout  time.Duration `yaml:"heartbeat_timeout"`
-	ElectionTimeout   time.Duration `yaml:"election_timeout"`
-	SnapshotInterval  time.Duration `yaml:"snapshot_interval"`
-	SnapshotThreshold uint64        `yaml:"snapshot_threshold"`
+	HeartbeatTimeout  time.Duration
+	ElectionTimeout   time.Duration
+	SnapshotInterval  time.Duration
+	SnapshotThreshold uint64
 
 	// Optional per-group overrides for true multi-group replication.
 	// The key "default" overrides the base group above.
-	Groups map[string]RaftGroupConfig `yaml:"groups"`
+	Groups map[string]RaftGroupConfig
 }
 
 // RaftGroupConfig defines overrides for an individual Raft replication group.
@@ -785,26 +787,30 @@ type RaftGroupConfig struct {
 	SnapshotThreshold uint64        `yaml:"snapshot_threshold"`
 }
 
-// EtcdConfig holds embedded etcd configuration.
+// EtcdConfig holds embedded etcd configuration. It is derived from the shared
+// static manifest rather than configured directly: v1 has no etcd section.
 type EtcdConfig struct {
-	DataDir        string `yaml:"data_dir"`
-	BindAddr       string `yaml:"bind_addr"` // Peer address (e.g., "0.0.0.0:2380")
-	AdvertiseAddr  string `yaml:"-"`
-	ClientAddr     string `yaml:"client_addr"`     // Client address (e.g., "0.0.0.0:2379")
-	InitialCluster string `yaml:"initial_cluster"` // "node1=http://host1:2380,node2=http://host2:2380"
-	Bootstrap      bool   `yaml:"bootstrap"`       // true only for first node
+	DataDir        string
+	BindAddr       string // Peer address (e.g., "0.0.0.0:2380")
+	AdvertiseAddr  string
+	ClientAddr     string // Client address (e.g., "0.0.0.0:2379")
+	InitialCluster string // "node1=http://host1:2380,node2=http://host2:2380"
+	// Bootstrap selects etcd's initial cluster state. Membership is static in
+	// v1, so every node declares the same full member set and this is always
+	// true; etcd ignores it once a write-ahead log exists.
+	Bootstrap bool
 
 	// Hybrid retained message storage threshold (in bytes)
 	// Messages smaller than this are replicated to all nodes via etcd
 	// Messages larger than this are stored on owner node and fetched on-demand via gRPC
 	// Default: 1024 (1KB)
-	HybridRetainedSizeThreshold int `yaml:"hybrid_retained_size_threshold"`
+	HybridRetainedSizeThreshold int
 }
 
 // TransportConfig holds inter-broker transport configuration.
 type TransportConfig struct {
-	BindAddr string            `yaml:"bind_addr"` // gRPC address (e.g., "0.0.0.0:7948")
-	Peers    map[string]string `yaml:"peers"`     // Map of nodeID -> transport address for peers
+	BindAddr string            // gRPC address (e.g., "0.0.0.0:7948")
+	Peers    map[string]string // Map of nodeID -> transport address for peers
 
 	// Inter-node routing batch policy.
 	// route_batch_max_size controls flush size.
@@ -812,19 +818,19 @@ type TransportConfig struct {
 	// route_batch_flush_workers controls the number of concurrent flush
 	// goroutines per remote node. Higher values increase throughput when
 	// gRPC calls are slow but use more goroutines. Default: 4.
-	RouteBatchMaxSize      int           `yaml:"route_batch_max_size"`
-	RouteBatchMaxDelay     time.Duration `yaml:"route_batch_max_delay"`
-	RouteBatchFlushWorkers int           `yaml:"route_batch_flush_workers"`
+	RouteBatchMaxSize      int
+	RouteBatchMaxDelay     time.Duration
+	RouteBatchFlushWorkers int
 
 	// RoutePublishTimeout is the maximum time to wait for a cross-cluster
 	// publish to complete (including retries). Zero uses the default (15s).
-	RoutePublishTimeout time.Duration `yaml:"route_publish_timeout"`
+	RoutePublishTimeout time.Duration
 
 	// TLS configuration for inter-broker communication
-	TLSEnabled  bool   `yaml:"tls_enabled"`   // Enable TLS for gRPC transport
-	TLSCertFile string `yaml:"tls_cert_file"` // Server certificate file
-	TLSKeyFile  string `yaml:"tls_key_file"`  // Server private key file
-	TLSCAFile   string `yaml:"tls_ca_file"`   // CA certificate for verifying peer certificates
+	TLSEnabled  bool   // Enable TLS for gRPC transport
+	TLSCertFile string // Server certificate file
+	TLSKeyFile  string // Server private key file
+	TLSCAFile   string // CA certificate for verifying peer certificates
 }
 
 // WebhookConfig holds webhook notification configuration.
