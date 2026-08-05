@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
-	mqtttls "github.com/absmach/fluxmq/pkg/tls"
 	"github.com/absmach/fluxmq/topics"
 	"gopkg.in/yaml.v3"
 )
@@ -22,12 +22,7 @@ const (
 	ProtocolModeV3   = "v3"
 	ProtocolModeV5   = "v5"
 
-	listenerNamePlain = "plain"
-	raftGroupDefault  = "default"
-
-	listenerNameTLS   = "tls"
-	listenerNameMTLS  = "mtls"
-	listenerNameLocal = "local"
+	raftGroupDefault = "default"
 
 	protocolMQTT    = "mqtt"
 	protocolAMQP    = "amqp"
@@ -35,12 +30,8 @@ const (
 	protocolHTTP    = "http"
 	protocolCoAP    = "coap"
 
-	defaultTCPV3Addr = ":1883"
-	defaultTCPV5Addr = ":1884"
-	defaultWSV3Addr  = ":8083"
-	defaultAMQP091   = ":5682"
-	defaultWSPath    = "/mqtt"
-	defaultNodeID    = "broker-1"
+	defaultWSPath = "/mqtt"
+	defaultNodeID = "broker-1"
 
 	logLevelDebug = "debug"
 	logLevelInfo  = "info"
@@ -75,7 +66,9 @@ type Config struct {
 	Experimental ExperimentalConfig `yaml:"-"`
 	Development  bool               `yaml:"-"`
 
-	Server       ServerConfig       `yaml:"-"`
+	// ShutdownTimeout bounds graceful shutdown of every listener and subsystem.
+	ShutdownTimeout time.Duration `yaml:"-"`
+
 	Broker       BrokerConfig       `yaml:"-"`
 	Session      SessionConfig      `yaml:"-"`
 	Log          LogConfig          `yaml:"-"`
@@ -337,7 +330,7 @@ func ValidateAgainstRuntime(running, next *Config) error {
 	// Listener changes are restart-required too. Ask whether the running
 	// process has a local listener; removing it from the desired file does not
 	// stop that listener before the runtime-safe principal snapshot is applied.
-	if len(running.Server.AMQP091.LocalListeners()) == 0 {
+	if !hasLocalAMQP091Listener(running) {
 		return nil
 	}
 	name, target, found := firstExactPublishTarget(next.Auth.LocalPrincipals)
@@ -345,6 +338,14 @@ func ValidateAgainstRuntime(running, next *Config) error {
 		return nil
 	}
 	return fmt.Errorf("auth.local_principals %q grants the exact publish target %q, which cannot be applied while the running node is clustered: clustering is restart-required, so disabling it in the same reload does not take effect until restart; restart the node to change both together", name, target)
+}
+
+// hasLocalAMQP091Listener reports whether any AMQP 0.9.1 listener admits
+// principals declared in auth.local_principals.
+func hasLocalAMQP091Listener(cfg *Config) bool {
+	return slices.ContainsFunc(cfg.Listeners.AMQP091, func(listener AMQP091ListenerConfig) bool {
+		return listener.Auth == AMQP091AuthLocal
+	})
 }
 
 // firstExactPublishTarget reports the first principal granting an exact publish
@@ -584,150 +585,6 @@ type SubscribeRateLimitConfig struct {
 	Enabled bool    `yaml:"enabled"`
 	Rate    float64 `yaml:"rate"`  // subscriptions per second per client
 	Burst   int     `yaml:"burst"` // burst allowance
-}
-
-// ServerConfig holds server-related configuration.
-type ServerConfig struct {
-	TCP       TCPConfig       `yaml:"tcp"`
-	WebSocket WebSocketConfig `yaml:"websocket"`
-	HTTP      HTTPConfig      `yaml:"http"`
-	CoAP      CoAPConfig      `yaml:"coap"`
-	AMQP      AMQPConfig      `yaml:"amqp"`
-	AMQP091   AMQP091Config   `yaml:"amqp091"`
-
-	HealthAddr      string        `yaml:"health_addr"`
-	MetricsAddr     string        `yaml:"metrics_addr"` // Now used for OTLP endpoint
-	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
-	HealthEnabled   bool          `yaml:"health_enabled"`
-	MetricsEnabled  bool          `yaml:"metrics_enabled"` // Now enables OTel
-
-	// OpenTelemetry configuration
-	OtelServiceName     string  `yaml:"otel_service_name"`
-	OtelServiceVersion  string  `yaml:"otel_service_version"`
-	OtelTracesEnabled   bool    `yaml:"otel_traces_enabled"`
-	OtelMetricsEnabled  bool    `yaml:"otel_metrics_enabled"`
-	OtelTraceSampleRate float64 `yaml:"otel_trace_sample_rate"` // 0.0 to 1.0
-
-	// OtelInsecure forces a cleartext OTLP/gRPC connection. Default is false:
-	// system-trust TLS is used unless OtelCAFile is set. Set true only when
-	// the collector is reachable on localhost or a trusted network.
-	OtelInsecure bool   `yaml:"otel_insecure"`
-	OtelCAFile   string `yaml:"otel_ca_file"`   // optional PEM bundle for verifying the collector
-	OtelCertFile string `yaml:"otel_cert_file"` // client cert for mTLS to the collector
-	OtelKeyFile  string `yaml:"otel_key_file"`  // client key for mTLS to the collector
-
-	// Admin API server (HTTP + Connect/gRPC). Empty disables the listener.
-	AdminAPIAddr string `yaml:"admin_api_addr"`
-}
-
-// TCPListenerConfig holds TCP listener configuration.
-type TCPListenerConfig struct {
-	Addr           string         `yaml:"addr"`
-	MaxConnections int            `yaml:"max_connections"`
-	ReadTimeout    time.Duration  `yaml:"read_timeout"`
-	WriteTimeout   time.Duration  `yaml:"write_timeout"`
-	Protocol       string         `yaml:"protocol"`
-	TLS            mqtttls.Config `yaml:",inline"`
-}
-
-// TCPConfig groups TCP listeners by mode.
-type TCPConfig struct {
-	V3   TCPListenerConfig `yaml:"v3"`
-	V5   TCPListenerConfig `yaml:"v5"`
-	TLS  TCPListenerConfig `yaml:"tls"`
-	MTLS TCPListenerConfig `yaml:"mtls"`
-}
-
-// WSListenerConfig holds WebSocket listener configuration.
-type WSListenerConfig struct {
-	Addr           string         `yaml:"addr"`
-	Path           string         `yaml:"path"`
-	Protocol       string         `yaml:"protocol"`
-	MaxConnections int            `yaml:"max_connections"`
-	ReadTimeout    time.Duration  `yaml:"read_timeout"`
-	WriteTimeout   time.Duration  `yaml:"write_timeout"`
-	AllowedOrigins []string       `yaml:"allowed_origins"`
-	TLS            mqtttls.Config `yaml:",inline"`
-}
-
-// WebSocketConfig groups WebSocket listeners by mode.
-type WebSocketConfig struct {
-	V3   WSListenerConfig `yaml:"v3"`
-	V5   WSListenerConfig `yaml:"v5"`
-	TLS  WSListenerConfig `yaml:"tls"`
-	MTLS WSListenerConfig `yaml:"mtls"`
-}
-
-// HTTPListenerConfig holds HTTP listener configuration.
-type HTTPListenerConfig struct {
-	Addr string         `yaml:"addr"`
-	TLS  mqtttls.Config `yaml:",inline"`
-}
-
-// HTTPConfig groups HTTP listeners by mode.
-type HTTPConfig struct {
-	Plain HTTPListenerConfig `yaml:"plain"`
-	TLS   HTTPListenerConfig `yaml:"tls"`
-	MTLS  HTTPListenerConfig `yaml:"mtls"`
-}
-
-// CoAPListenerConfig holds CoAP listener configuration.
-type CoAPListenerConfig struct {
-	Addr string         `yaml:"addr"`
-	TLS  mqtttls.Config `yaml:",inline"`
-}
-
-// CoAPConfig groups CoAP listeners by mode.
-type CoAPConfig struct {
-	Plain CoAPListenerConfig `yaml:"plain"`
-	DTLS  CoAPListenerConfig `yaml:"dtls"`
-	MDTLS CoAPListenerConfig `yaml:"mdtls"`
-}
-
-// AMQPListenerConfig holds AMQP listener configuration.
-type AMQPListenerConfig struct {
-	Addr           string         `yaml:"addr"`
-	MaxConnections int            `yaml:"max_connections"`
-	TLS            mqtttls.Config `yaml:",inline"`
-}
-
-// AMQPConfig groups AMQP listeners by mode.
-type AMQPConfig struct {
-	Plain AMQPListenerConfig `yaml:"plain"`
-	TLS   AMQPListenerConfig `yaml:"tls"`
-	MTLS  AMQPListenerConfig `yaml:"mtls"`
-}
-
-// AMQP091ListenerConfig holds AMQP 0.9.1 listener configuration.
-type AMQP091ListenerConfig struct {
-	Addr           string         `yaml:"addr"`
-	MaxConnections int            `yaml:"max_connections"`
-	TLS            mqtttls.Config `yaml:",inline"`
-}
-
-// AMQP091Config groups AMQP 0.9.1 listeners by mode.
-type AMQP091Config struct {
-	Plain AMQP091ListenerConfig `yaml:"plain"`
-	TLS   AMQP091ListenerConfig `yaml:"tls"`
-	MTLS  AMQP091ListenerConfig `yaml:"mtls"`
-	// Local admits principals declared in auth.local_principals over mTLS. It
-	// confers no capability of its own: what a principal may do comes from its
-	// role.
-	Local AMQP091ListenerConfig `yaml:"local"`
-}
-
-// LocalListeners returns the configured local-principal listener, if any.
-func (c AMQP091Config) LocalListeners() []NamedAMQP091Listener {
-	if !hasAddr(c.Local.Addr) {
-		return nil
-	}
-	return []NamedAMQP091Listener{{Name: listenerNameLocal, Config: c.Local}}
-}
-
-// NamedAMQP091Listener pairs a listener with the configuration key that named it.
-type NamedAMQP091Listener struct {
-	Name   string
-	Config AMQP091ListenerConfig
 }
 
 // DefaultMaxInflightMessages is the fallback for Session.MaxInflightMessages
@@ -1007,116 +864,7 @@ type WebhookEndpoint struct {
 // Default returns a configuration with sensible defaults.
 func defaultRuntime() *Config {
 	return &Config{
-		Server: ServerConfig{
-			TCP: TCPConfig{
-				V3: TCPListenerConfig{
-					Addr:           defaultTCPV3Addr,
-					MaxConnections: 10000,
-					ReadTimeout:    60 * time.Second,
-					WriteTimeout:   60 * time.Second,
-					Protocol:       ProtocolModeV3,
-				},
-				V5: TCPListenerConfig{
-					Addr:           defaultTCPV5Addr,
-					MaxConnections: 10000,
-					ReadTimeout:    60 * time.Second,
-					WriteTimeout:   60 * time.Second,
-					Protocol:       ProtocolModeV5,
-				},
-				TLS: TCPListenerConfig{
-					MaxConnections: 10000,
-					ReadTimeout:    60 * time.Second,
-					WriteTimeout:   60 * time.Second,
-					Protocol:       ProtocolModeAuto,
-				},
-				MTLS: TCPListenerConfig{
-					MaxConnections: 10000,
-					ReadTimeout:    60 * time.Second,
-					WriteTimeout:   60 * time.Second,
-					Protocol:       ProtocolModeAuto,
-				},
-			},
-			WebSocket: WebSocketConfig{
-				V3: WSListenerConfig{
-					Addr:           defaultWSV3Addr,
-					Path:           defaultWSPath,
-					Protocol:       ProtocolModeV3,
-					MaxConnections: 10000,
-					ReadTimeout:    60 * time.Second,
-					WriteTimeout:   60 * time.Second,
-				},
-				V5: WSListenerConfig{
-					Addr:           ":8084",
-					Path:           defaultWSPath,
-					Protocol:       ProtocolModeV5,
-					MaxConnections: 10000,
-					ReadTimeout:    60 * time.Second,
-					WriteTimeout:   60 * time.Second,
-				},
-				TLS: WSListenerConfig{
-					Path:           defaultWSPath,
-					Protocol:       ProtocolModeAuto,
-					MaxConnections: 10000,
-					ReadTimeout:    60 * time.Second,
-					WriteTimeout:   60 * time.Second,
-				},
-				MTLS: WSListenerConfig{
-					Path:           defaultWSPath,
-					Protocol:       ProtocolModeAuto,
-					MaxConnections: 10000,
-					ReadTimeout:    60 * time.Second,
-					WriteTimeout:   60 * time.Second,
-				},
-			},
-			HTTP: HTTPConfig{
-				Plain: HTTPListenerConfig{},
-				TLS:   HTTPListenerConfig{},
-				MTLS:  HTTPListenerConfig{},
-			},
-			CoAP: CoAPConfig{
-				Plain: CoAPListenerConfig{},
-				DTLS:  CoAPListenerConfig{},
-				MDTLS: CoAPListenerConfig{},
-			},
-			AMQP: AMQPConfig{
-				Plain: AMQPListenerConfig{
-					Addr:           ":5672",
-					MaxConnections: 10000,
-				},
-				TLS: AMQPListenerConfig{
-					MaxConnections: 10000,
-				},
-				MTLS: AMQPListenerConfig{
-					MaxConnections: 10000,
-				},
-			},
-			AMQP091: AMQP091Config{
-				Plain: AMQP091ListenerConfig{
-					Addr:           defaultAMQP091,
-					MaxConnections: 10000,
-				},
-				TLS: AMQP091ListenerConfig{
-					MaxConnections: 10000,
-				},
-				MTLS: AMQP091ListenerConfig{
-					MaxConnections: 10000,
-				},
-				Local: AMQP091ListenerConfig{},
-			},
-			HealthAddr:      ":8081",
-			HealthEnabled:   true,
-			AdminAPIAddr:    ":8082",
-			MetricsAddr:     "localhost:4317",
-			MetricsEnabled:  false,
-			ShutdownTimeout: 30 * time.Second,
-
-			// OpenTelemetry defaults
-			OtelServiceName:     "fluxmq",
-			OtelServiceVersion:  "1.0.0",
-			OtelMetricsEnabled:  true,
-			OtelTracesEnabled:   false, // Disabled by default for performance
-			OtelTraceSampleRate: 0.1,   // 10% sampling when enabled
-		},
+		ShutdownTimeout: 30 * time.Second,
 		Broker: BrokerConfig{
 			MaxMessageSize:      1024 * 1024, // 1MB
 			MaxRetainedMessages: 10000,
@@ -1270,242 +1018,6 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
-	tcpSlots := []struct {
-		name              string
-		cfg               TCPListenerConfig
-		requireClientAuth bool
-		requireTLS        bool
-		fixedProtocol     string
-	}{
-		{name: "v3", cfg: c.Server.TCP.V3, fixedProtocol: ProtocolModeV3},
-		{name: "v5", cfg: c.Server.TCP.V5, fixedProtocol: ProtocolModeV5},
-		{name: listenerNameTLS, cfg: c.Server.TCP.TLS, requireClientAuth: false, requireTLS: true},
-		{name: listenerNameMTLS, cfg: c.Server.TCP.MTLS, requireClientAuth: true, requireTLS: true},
-	}
-
-	wsSlots := []struct {
-		name              string
-		cfg               WSListenerConfig
-		requireTLS        bool
-		requireClientAuth bool
-		fixedProtocol     string
-	}{
-		{name: "v3", cfg: c.Server.WebSocket.V3, fixedProtocol: ProtocolModeV3},
-		{name: "v5", cfg: c.Server.WebSocket.V5, fixedProtocol: ProtocolModeV5},
-		{name: listenerNameTLS, cfg: c.Server.WebSocket.TLS, requireTLS: true},
-		{name: listenerNameMTLS, cfg: c.Server.WebSocket.MTLS, requireTLS: true, requireClientAuth: true},
-	}
-
-	httpSlots := []struct {
-		name              string
-		cfg               HTTPListenerConfig
-		requireClientAuth bool
-	}{
-		{name: listenerNamePlain, cfg: c.Server.HTTP.Plain, requireClientAuth: false},
-		{name: listenerNameTLS, cfg: c.Server.HTTP.TLS, requireClientAuth: false},
-		{name: listenerNameMTLS, cfg: c.Server.HTTP.MTLS, requireClientAuth: true},
-	}
-
-	hasMessagingListener := false
-
-	for _, slot := range tcpSlots {
-		if err := validateListenerProtocol("server.tcp."+slot.name+".protocol", slot.cfg.Protocol); err != nil {
-			return err
-		}
-		mode := NormalizeProtocolMode(slot.cfg.Protocol)
-		if slot.fixedProtocol != "" && mode != slot.fixedProtocol {
-			return fmt.Errorf("server.tcp.%s.protocol must be %q", slot.name, slot.fixedProtocol)
-		}
-		if !hasAddr(slot.cfg.Addr) {
-			if tlsConfigured(slot.cfg.TLS) && !slot.requireTLS {
-				return fmt.Errorf("server.tcp.%s TLS fields are not supported for non-TLS listeners", slot.name)
-			}
-			continue
-		}
-
-		hasMessagingListener = true
-		if slot.cfg.MaxConnections < 0 {
-			return fmt.Errorf("server.tcp.%s.max_connections cannot be negative", slot.name)
-		}
-		if slot.cfg.ReadTimeout < 0 {
-			return fmt.Errorf("server.tcp.%s.read_timeout cannot be negative", slot.name)
-		}
-		if slot.cfg.WriteTimeout < 0 {
-			return fmt.Errorf("server.tcp.%s.write_timeout cannot be negative", slot.name)
-		}
-		if slot.requireTLS {
-			if err := validateListenerTLS("server.tcp."+slot.name, slot.cfg.TLS, slot.requireClientAuth); err != nil {
-				return err
-			}
-		} else if tlsConfigured(slot.cfg.TLS) {
-			return fmt.Errorf("server.tcp.%s TLS fields are not supported for non-TLS listeners", slot.name)
-		}
-	}
-
-	for _, slot := range wsSlots {
-		if err := validateListenerProtocol("server.websocket."+slot.name+".protocol", slot.cfg.Protocol); err != nil {
-			return err
-		}
-		mode := NormalizeProtocolMode(slot.cfg.Protocol)
-		if slot.fixedProtocol != "" && mode != slot.fixedProtocol {
-			return fmt.Errorf("server.websocket.%s.protocol must be %q", slot.name, slot.fixedProtocol)
-		}
-		if !hasAddr(slot.cfg.Addr) {
-			if tlsConfigured(slot.cfg.TLS) && !slot.requireTLS {
-				return fmt.Errorf("server.websocket.%s TLS fields are not supported for non-TLS listeners", slot.name)
-			}
-			continue
-		}
-
-		hasMessagingListener = true
-		if slot.cfg.MaxConnections < 0 {
-			return fmt.Errorf("server.websocket.%s.max_connections cannot be negative", slot.name)
-		}
-		if slot.cfg.ReadTimeout < 0 {
-			return fmt.Errorf("server.websocket.%s.read_timeout cannot be negative", slot.name)
-		}
-		if slot.cfg.WriteTimeout < 0 {
-			return fmt.Errorf("server.websocket.%s.write_timeout cannot be negative", slot.name)
-		}
-		if slot.requireTLS {
-			if err := validateListenerTLS("server.websocket."+slot.name, slot.cfg.TLS, slot.requireClientAuth); err != nil {
-				return err
-			}
-		} else if tlsConfigured(slot.cfg.TLS) {
-			return fmt.Errorf("server.websocket.%s TLS fields are not supported for non-TLS listeners", slot.name)
-		}
-	}
-
-	c.Server.AdminAPIAddr = strings.TrimSpace(c.Server.AdminAPIAddr)
-	if c.Server.AdminAPIAddr != "" && !hasAddr(c.Server.AdminAPIAddr) {
-		return fmt.Errorf("server.admin_api_addr cannot be blank when set")
-	}
-
-	for _, slot := range httpSlots {
-		if !hasAddr(slot.cfg.Addr) {
-			if tlsConfigured(slot.cfg.TLS) && slot.name == listenerNamePlain {
-				return fmt.Errorf("server.http.%s TLS fields are not supported for plain listeners", slot.name)
-			}
-			continue
-		}
-		hasMessagingListener = true
-
-		if slot.name == listenerNamePlain && tlsConfigured(slot.cfg.TLS) {
-			return fmt.Errorf("server.http.%s TLS fields are not supported for plain listeners", slot.name)
-		}
-		if slot.name != listenerNamePlain {
-			if err := validateListenerTLS("server.http."+slot.name, slot.cfg.TLS, slot.requireClientAuth); err != nil {
-				return err
-			}
-		}
-	}
-
-	coapSlots := []struct {
-		name              string
-		cfg               CoAPListenerConfig
-		requireClientAuth bool
-	}{
-		{name: listenerNamePlain, cfg: c.Server.CoAP.Plain},
-		{name: "dtls", cfg: c.Server.CoAP.DTLS},
-		{name: "mdtls", cfg: c.Server.CoAP.MDTLS, requireClientAuth: true},
-	}
-
-	for _, slot := range coapSlots {
-		if !hasAddr(slot.cfg.Addr) {
-			if tlsConfigured(slot.cfg.TLS) && slot.name == listenerNamePlain {
-				return fmt.Errorf("server.coap.%s TLS fields are not supported for plain listeners", slot.name)
-			}
-			continue
-		}
-		hasMessagingListener = true
-
-		if slot.name == listenerNamePlain && tlsConfigured(slot.cfg.TLS) {
-			return fmt.Errorf("server.coap.%s TLS fields are not supported for plain listeners", slot.name)
-		}
-		if slot.name != listenerNamePlain {
-			if err := validateListenerTLS("server.coap."+slot.name, slot.cfg.TLS, slot.requireClientAuth); err != nil {
-				return err
-			}
-		}
-	}
-
-	// AMQP validation
-	amqpSlots := []struct {
-		name              string
-		cfg               AMQPListenerConfig
-		requireClientAuth bool
-	}{
-		{name: listenerNamePlain, cfg: c.Server.AMQP.Plain, requireClientAuth: false},
-		{name: listenerNameTLS, cfg: c.Server.AMQP.TLS, requireClientAuth: false},
-		{name: listenerNameMTLS, cfg: c.Server.AMQP.MTLS, requireClientAuth: true},
-	}
-
-	for _, slot := range amqpSlots {
-		if !hasAddr(slot.cfg.Addr) {
-			if tlsConfigured(slot.cfg.TLS) && slot.name == listenerNamePlain {
-				return fmt.Errorf("server.amqp.%s TLS fields are not supported for plain listeners", slot.name)
-			}
-			continue
-		}
-		hasMessagingListener = true
-
-		if slot.cfg.MaxConnections < 0 {
-			return fmt.Errorf("server.amqp.%s.max_connections cannot be negative", slot.name)
-		}
-		if slot.name == listenerNamePlain && tlsConfigured(slot.cfg.TLS) {
-			return fmt.Errorf("server.amqp.%s TLS fields are not supported for plain listeners", slot.name)
-		}
-		if slot.name != listenerNamePlain {
-			if err := validateListenerTLS("server.amqp."+slot.name, slot.cfg.TLS, slot.requireClientAuth); err != nil {
-				return err
-			}
-		}
-	}
-
-	// AMQP 0.9.1 validation
-	amqp091Slots := []struct {
-		name                   string
-		cfg                    AMQP091ListenerConfig
-		requireClientAuth      bool
-		requireExactClientAuth bool
-	}{
-		{name: listenerNamePlain, cfg: c.Server.AMQP091.Plain, requireClientAuth: false},
-		{name: listenerNameTLS, cfg: c.Server.AMQP091.TLS, requireClientAuth: false},
-		{name: listenerNameMTLS, cfg: c.Server.AMQP091.MTLS, requireClientAuth: true},
-		{name: listenerNameLocal, cfg: c.Server.AMQP091.Local, requireClientAuth: true, requireExactClientAuth: true},
-	}
-
-	for _, slot := range amqp091Slots {
-		if !hasAddr(slot.cfg.Addr) {
-			if tlsConfigured(slot.cfg.TLS) && slot.name == listenerNamePlain {
-				return fmt.Errorf("server.amqp091.%s TLS fields are not supported for plain listeners", slot.name)
-			}
-			continue
-		}
-		hasMessagingListener = true
-
-		if slot.requireExactClientAuth && slot.cfg.MaxConnections <= 0 {
-			return fmt.Errorf("server.amqp091.%s.max_connections must be positive", slot.name)
-		}
-		if slot.cfg.MaxConnections < 0 {
-			return fmt.Errorf("server.amqp091.%s.max_connections cannot be negative", slot.name)
-		}
-		if slot.name == listenerNamePlain && tlsConfigured(slot.cfg.TLS) {
-			return fmt.Errorf("server.amqp091.%s TLS fields are not supported for plain listeners", slot.name)
-		}
-		if slot.name != listenerNamePlain {
-			if err := validateListenerTLS("server.amqp091."+slot.name, slot.cfg.TLS, slot.requireClientAuth); err != nil {
-				return err
-			}
-			if slot.requireExactClientAuth && strings.ToLower(strings.TrimSpace(slot.cfg.TLS.ClientAuth)) != clientAuthRequire {
-				return fmt.Errorf("server.amqp091.%s.client_auth must be \"require\"", slot.name)
-			}
-		}
-	}
-	if !hasMessagingListener {
-		return fmt.Errorf("at least one messaging listener must be configured")
-	}
-
 	for proto := range c.Auth.External.Protocols {
 		if !knownAuthProtocols[proto] {
 			return fmt.Errorf("auth.external.protocols: unknown protocol %q (valid: mqtt, amqp, amqp091, http, coap)", proto)
@@ -1513,39 +1025,6 @@ func (c *Config) Validate() error {
 	}
 	if err := ValidateLocalPrincipals(c.Auth.LocalPrincipals); err != nil {
 		return err
-	}
-	// Every local-principal listener authenticates against the same store, so a
-	// listener under any of the keys requires the store to be populated.
-	for _, listener := range c.Server.AMQP091.LocalListeners() {
-		if len(c.Auth.LocalPrincipals) == 0 {
-			return fmt.Errorf("auth.local_principals must contain at least one principal when server.amqp091.%s.addr is configured", listener.Name)
-		}
-		// An exact publish target is appended and synced on the receiving node
-		// only, and is deliberately never forwarded to other nodes: forwarding
-		// would acknowledge a publisher on a barrier no single node established.
-		// In a cluster that makes those records unreachable from consumers
-		// attached elsewhere, with nothing to signal it, so refuse the
-		// combination rather than serve a principal whose records only some
-		// readers can see.
-		//
-		// The permission decides this, not the listener, exactly as it decides
-		// how a publication is routed. A prefix permission cannot name a queue,
-		// so it never takes that single-node durable path and a principal
-		// holding only prefix permissions may run clustered.
-		//
-		// A prefix publication may still be captured by a queue whose own topics
-		// pattern matches it, and that append is likewise not forwarded to nodes
-		// that already know the queue — remote consumers are served by the
-		// delivery engine instead. That is not what this rule gates: capture
-		// applies to every publisher on every protocol, so refusing a local
-		// principal for it would single out the one publisher whose behavior is
-		// declared in configuration. What is gated here is the durable-stream
-		// path, which bypasses cluster distribution entirely by design.
-		if c.Cluster.Enabled {
-			if name, target, found := firstExactPublishTarget(c.Auth.LocalPrincipals); found {
-				return fmt.Errorf("auth.local_principals %q grants the exact publish target %q, which cannot be combined with cluster.enabled: an exact target is durable on the receiving node only and is not forwarded to other nodes; grant permissions.publish[].routing_key_prefix instead, or run server.amqp091.%s on a single-node deployment", name, target, listener.Name)
-			}
-		}
 	}
 	for proto := range c.Hooks.Protocols {
 		if !knownAuthProtocols[proto] {
@@ -1611,12 +1090,12 @@ func (c *Config) Validate() error {
 	}
 
 	// OpenTelemetry validation (only if metrics enabled)
-	if c.Server.MetricsEnabled {
-		if c.Server.OtelServiceName == "" {
-			return fmt.Errorf("server.otel_service_name cannot be empty when metrics enabled")
+	if c.Telemetry.Enabled {
+		if c.Telemetry.ServiceName == "" {
+			return fmt.Errorf("telemetry.service_name cannot be empty when telemetry is enabled")
 		}
-		if c.Server.OtelTraceSampleRate < 0.0 || c.Server.OtelTraceSampleRate > 1.0 {
-			return fmt.Errorf("server.otel_trace_sample_rate must be between 0.0 and 1.0")
+		if c.Telemetry.TraceSampleRate < 0.0 || c.Telemetry.TraceSampleRate > 1.0 {
+			return fmt.Errorf("telemetry.trace_sample_rate must be between 0.0 and 1.0")
 		}
 	}
 
@@ -1852,19 +1331,6 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-func validateListenerTLS(prefix string, cfg mqtttls.Config, requireCA bool) error {
-	if cfg.CertFile == "" {
-		return fmt.Errorf("%s.cert_file required", prefix)
-	}
-	if cfg.KeyFile == "" {
-		return fmt.Errorf("%s.key_file required", prefix)
-	}
-	if requireCA && cfg.ClientCAFile == "" {
-		return fmt.Errorf("%s.ca_file required", prefix)
-	}
-	return nil
-}
-
 // ValidateLocalPrincipals checks the declarative rules for local principals:
 // unique non-blank names and absolute URI SANs, readable high-entropy secret
 // files, roles, and exact-or-prefix publish permissions. It is the single
@@ -2042,30 +1508,6 @@ func NormalizeProtocolMode(mode string) string {
 	default:
 		return ProtocolModeAuto
 	}
-}
-
-func validateListenerProtocol(field, mode string) error {
-	switch NormalizeProtocolMode(mode) {
-	case ProtocolModeAuto, ProtocolModeV3, ProtocolModeV5:
-		return nil
-	default:
-		return fmt.Errorf("%s must be one of: auto, v3, v5", field)
-	}
-}
-
-func tlsConfigured(cfg mqtttls.Config) bool {
-	return cfg.CertFile != "" ||
-		cfg.KeyFile != "" ||
-		cfg.ServerCAFile != "" ||
-		cfg.ClientCAFile != "" ||
-		cfg.ClientAuth != "" ||
-		cfg.MinVersion != "" ||
-		len(cfg.CipherSuites) > 0 ||
-		cfg.PreferServerCipherSuites != nil
-}
-
-func hasAddr(addr string) bool {
-	return strings.TrimSpace(addr) != ""
 }
 
 // Save writes the configuration to a YAML file.

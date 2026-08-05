@@ -128,13 +128,18 @@ func buildFieldClassification() map[string]ReloadClass {
 
 // restartReasons provides human-readable reasons for restart-required fields.
 var restartReasons = map[string]string{
-	"Server":       "listener addresses and TLS config require restart",
-	"Storage":      "storage backend cannot be changed at runtime",
-	"Cluster":      "cluster topology requires restart",
-	"QueueManager": "queue manager config requires restart",
-	"Queues":       "queue definitions require restart",
-	"Auth":         "auth config affects connection-level behavior",
-	"Broker":       "this broker setting requires restart",
+	"Listeners":       "listener addresses and TLS config require restart",
+	"ShutdownTimeout": "the shutdown deadline is captured by each listener at startup",
+	"Admin":           "the admin API listener requires restart",
+	"Health":          "the health listener requires restart",
+	"Telemetry":       "telemetry export is wired at startup",
+	"Experimental":    "experimental features are wired at startup",
+	"Storage":         "storage backend cannot be changed at runtime",
+	"Cluster":         "cluster topology requires restart",
+	"QueueManager":    "queue manager config requires restart",
+	"Queues":          "queue definitions require restart",
+	"Auth":            "auth config affects connection-level behavior",
+	"Broker":          "this broker setting requires restart",
 }
 
 // ClassifyField returns the reload classification for a config field path.

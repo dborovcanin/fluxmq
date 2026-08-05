@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +94,78 @@ storage:
 	}
 	if cfg.Listeners.AMQP091[0].Auth != AMQP091AuthExternal || cfg.Listeners.AMQP1[0].HandshakeTimeout != 10*time.Second {
 		t.Fatalf("unexpected AMQP listeners: amqp091=%+v amqp1=%+v", cfg.Listeners.AMQP091, cfg.Listeners.AMQP1)
+	}
+}
+
+// v1 listeners are a list, not a fixed plain/TLS/mTLS matrix, so several
+// listeners of the same transport and protocol version must all survive
+// normalization and all be validated. A matrix keyed on those attributes
+// silently keeps only the last one.
+func TestLoadV1KeepsEveryListenerOfTheSameClass(t *testing.T) {
+	body := `version: 1
+listeners:
+  mqtt:
+    - address: ":1883"
+      transport: tcp
+      versions: ["3.1.1"]
+    - address: ":1993"
+      transport: tcp
+      versions: ["3.1.1"]
+    - address: ":3883"
+      transport: tcp
+      versions: ["3.1.1"]
+  amqp091:
+    - address: ":5682"
+      auth: external
+    - address: ":5683"
+      auth: external
+  amqp1: []
+storage:
+  type: memory
+`
+	cfg := loadTestYAML(t, body, LoadOptions{})
+
+	addresses := make([]string, 0, len(cfg.Listeners.MQTT))
+	for _, listener := range cfg.Listeners.MQTT {
+		addresses = append(addresses, listener.Address)
+	}
+	if !slices.Equal(addresses, []string{":1883", ":1993", ":3883"}) {
+		t.Fatalf("MQTT listeners = %v, want all three preserved in order", addresses)
+	}
+	if len(cfg.Listeners.AMQP091) != 2 {
+		t.Fatalf("AMQP 0.9.1 listeners = %d, want 2", len(cfg.Listeners.AMQP091))
+	}
+
+	// Every listener is validated, not just the last of its class.
+	cfg.Listeners.MQTT[0].MaxConnections = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() accepted a negative limit on the first listener of its class")
+	}
+}
+
+// An empty admin address disables the API; a blank one is a typo that must not
+// silently disable it.
+func TestLoadV1RejectsBlankAdminAddress(t *testing.T) {
+	body := `version: 1
+listeners:
+  mqtt:
+    - address: ":1883"
+      transport: tcp
+      versions: ["3.1.1"]
+  amqp091: []
+  amqp1: []
+storage:
+  type: memory
+admin:
+  address: "   "
+`
+	filename := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(filename, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(filename)
+	if err == nil || !strings.Contains(err.Error(), "admin.address cannot be blank when set") {
+		t.Fatalf("Load() error = %v, want a blank admin.address failure", err)
 	}
 }
 

@@ -26,14 +26,14 @@ import (
 
 // InitProvider initializes OpenTelemetry SDK with OTLP exporters.
 // Returns a shutdown function that should be called on application exit.
-func InitProvider(cfg config.ServerConfig, nodeID string) (func(context.Context) error, error) {
+func InitProvider(cfg config.TelemetryConfig, nodeID string) (func(context.Context) error, error) {
 	ctx := context.Background()
 
 	// Create resource with service information
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
-			semconv.ServiceNameKey.String(cfg.OtelServiceName),
-			semconv.ServiceVersionKey.String(cfg.OtelServiceVersion),
+			semconv.ServiceNameKey.String(cfg.ServiceName),
+			semconv.ServiceVersionKey.String(cfg.ServiceVersion),
 			semconv.ServiceInstanceIDKey.String(nodeID),
 		),
 	)
@@ -44,7 +44,7 @@ func InitProvider(cfg config.ServerConfig, nodeID string) (func(context.Context)
 	var shutdownFuncs []func(context.Context) error
 
 	// Initialize TracerProvider
-	if cfg.OtelTracesEnabled {
+	if cfg.TracesEnabled {
 		traceShutdown, err := initTracerProvider(ctx, cfg, res)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize tracer provider: %w", err)
@@ -56,7 +56,7 @@ func InitProvider(cfg config.ServerConfig, nodeID string) (func(context.Context)
 	}
 
 	// Initialize MeterProvider (always enabled if metrics are enabled)
-	if cfg.OtelMetricsEnabled {
+	if cfg.MetricsEnabled {
 		meterShutdown, err := initMeterProvider(ctx, cfg, res)
 		if err != nil {
 			// Cleanup trace provider if meter fails
@@ -87,28 +87,28 @@ func InitProvider(cfg config.ServerConfig, nodeID string) (func(context.Context)
 // the trace and metric OTLP exporters. Returns (transportOption, error) where
 // transportOption is either otlptracegrpc.WithInsecure / otlpmetricgrpc.WithInsecure
 // equivalent or otlp...grpc.WithTLSCredentials.
-func buildTLSCredentials(cfg config.ServerConfig) (*tls.Config, error) {
+func buildTLSCredentials(cfg config.TelemetryConfig) (*tls.Config, error) {
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 
-	if cfg.OtelCAFile != "" {
-		pem, err := os.ReadFile(cfg.OtelCAFile)
+	if cfg.CAFile != "" {
+		pem, err := os.ReadFile(cfg.CAFile)
 		if err != nil {
-			return nil, fmt.Errorf("read otel CA: %w", err)
+			return nil, fmt.Errorf("read telemetry CA: %w", err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("otel CA file %q contains no valid certificates", cfg.OtelCAFile)
+			return nil, fmt.Errorf("telemetry.ca_file %q contains no valid certificates", cfg.CAFile)
 		}
 		tlsCfg.RootCAs = pool
 	}
 
-	if cfg.OtelCertFile != "" || cfg.OtelKeyFile != "" {
-		if cfg.OtelCertFile == "" || cfg.OtelKeyFile == "" {
-			return nil, fmt.Errorf("otel client mTLS requires both otel_cert_file and otel_key_file")
+	if cfg.CertFile != "" || cfg.KeyFile != "" {
+		if cfg.CertFile == "" || cfg.KeyFile == "" {
+			return nil, fmt.Errorf("telemetry client mTLS requires both telemetry.cert_file and telemetry.key_file")
 		}
-		cert, err := tls.LoadX509KeyPair(cfg.OtelCertFile, cfg.OtelKeyFile)
+		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 		if err != nil {
-			return nil, fmt.Errorf("load otel client keypair: %w", err)
+			return nil, fmt.Errorf("load telemetry client keypair: %w", err)
 		}
 		tlsCfg.Certificates = []tls.Certificate{cert}
 	}
@@ -117,12 +117,12 @@ func buildTLSCredentials(cfg config.ServerConfig) (*tls.Config, error) {
 }
 
 // initTracerProvider creates and registers a TracerProvider with OTLP exporter.
-func initTracerProvider(ctx context.Context, cfg config.ServerConfig, res *resource.Resource) (func(context.Context) error, error) {
+func initTracerProvider(ctx context.Context, cfg config.TelemetryConfig, res *resource.Resource) (func(context.Context) error, error) {
 	opts := []otlptracegrpc.Option{
-		otlptracegrpc.WithEndpoint(cfg.MetricsAddr),
+		otlptracegrpc.WithEndpoint(cfg.Endpoint),
 		otlptracegrpc.WithTimeout(30 * time.Second),
 	}
-	if cfg.OtelInsecure {
+	if cfg.Insecure {
 		opts = append(opts, otlptracegrpc.WithInsecure())
 	} else {
 		tlsCfg, err := buildTLSCredentials(cfg)
@@ -137,7 +137,7 @@ func initTracerProvider(ctx context.Context, cfg config.ServerConfig, res *resou
 		return nil, fmt.Errorf("failed to create trace exporter: %w", err)
 	}
 
-	sampler := trace.ParentBased(trace.TraceIDRatioBased(cfg.OtelTraceSampleRate))
+	sampler := trace.ParentBased(trace.TraceIDRatioBased(cfg.TraceSampleRate))
 
 	tp := trace.NewTracerProvider(
 		trace.WithResource(res),
@@ -154,12 +154,12 @@ func initTracerProvider(ctx context.Context, cfg config.ServerConfig, res *resou
 }
 
 // initMeterProvider creates and registers a MeterProvider with OTLP exporter.
-func initMeterProvider(ctx context.Context, cfg config.ServerConfig, res *resource.Resource) (func(context.Context) error, error) {
+func initMeterProvider(ctx context.Context, cfg config.TelemetryConfig, res *resource.Resource) (func(context.Context) error, error) {
 	opts := []otlpmetricgrpc.Option{
-		otlpmetricgrpc.WithEndpoint(cfg.MetricsAddr),
+		otlpmetricgrpc.WithEndpoint(cfg.Endpoint),
 		otlpmetricgrpc.WithTimeout(30 * time.Second),
 	}
-	if cfg.OtelInsecure {
+	if cfg.Insecure {
 		opts = append(opts, otlpmetricgrpc.WithInsecure())
 	} else {
 		tlsCfg, err := buildTLSCredentials(cfg)

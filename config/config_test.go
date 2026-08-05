@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	mqtttls "github.com/absmach/fluxmq/pkg/tls"
 )
 
 const (
@@ -79,56 +81,56 @@ func TestValidate(t *testing.T) {
 			name: "AMQP 0.9.1-only deployment is valid",
 			modify: func(c *Config) {
 				disableMessagingListeners(c)
-				c.Listeners.AMQP091 = []AMQP091V1ListenerConfig{{Address: defaultAMQP091, Auth: AMQP091AuthExternal, MaxConnections: 100}}
-				c.Server.AMQP091.Plain.Addr = defaultAMQP091
-				c.Server.AMQP091.Plain.MaxConnections = 100
+				c.Listeners.AMQP091 = []AMQP091ListenerConfig{{Address: ":5682", Auth: AMQP091AuthExternal, MaxConnections: 100}}
 			},
 			wantErr: false,
 		},
 		{
-			name: "TCP TLS listener without cert",
+			name: "MQTT TLS listener without cert",
 			modify: func(c *Config) {
-				c.Server.TCP.TLS.Addr = ":8883"
-				c.Server.TCP.TLS.TLS.CertFile = ""
-				c.Server.TCP.TLS.TLS.KeyFile = ""
+				c.Listeners.MQTT[0].TLS = &mqtttls.Config{}
 			},
 			wantErr: true,
 		},
 		{
-			name: "negative websocket max_connections",
+			name: "unknown MQTT transport",
 			modify: func(c *Config) {
-				c.Server.WebSocket.V3.Addr = defaultWSV3Addr
-				c.Server.WebSocket.V3.MaxConnections = -1
+				c.Listeners.MQTT[0].Transport = "quic"
 			},
 			wantErr: true,
 		},
 		{
-			name: "negative websocket read_timeout",
+			name: "unsupported MQTT version",
 			modify: func(c *Config) {
-				c.Server.WebSocket.V3.Addr = defaultWSV3Addr
-				c.Server.WebSocket.V3.ReadTimeout = -time.Second
+				c.Listeners.MQTT[0].Versions = []string{"3.1"}
 			},
 			wantErr: true,
 		},
 		{
-			name: "negative websocket write_timeout",
+			name: "negative MQTT max_connections",
 			modify: func(c *Config) {
-				c.Server.WebSocket.V3.Addr = defaultWSV3Addr
-				c.Server.WebSocket.V3.WriteTimeout = -time.Second
+				c.Listeners.MQTT[0].MaxConnections = -1
 			},
 			wantErr: true,
 		},
 		{
-			name: "negative tcp read_timeout",
+			name: "negative MQTT read_timeout",
 			modify: func(c *Config) {
-				c.Server.TCP.V3.ReadTimeout = -time.Second
+				c.Listeners.MQTT[0].ReadTimeout = -time.Second
 			},
 			wantErr: true,
 		},
 		{
-			name: "negative tcp write_timeout",
+			name: "negative MQTT write_timeout",
 			modify: func(c *Config) {
-				c.Server.TCP.V3.WriteTimeout = -time.Second
+				c.Listeners.MQTT[0].WriteTimeout = -time.Second
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty MQTT listener address",
+			modify: func(c *Config) {
+				c.Listeners.MQTT[0].Address = "  "
 			},
 			wantErr: true,
 		},
@@ -143,20 +145,6 @@ func TestValidate(t *testing.T) {
 			name: "invalid log level",
 			modify: func(c *Config) {
 				c.Log.Level = "invalid"
-			},
-			wantErr: true,
-		},
-		{
-			name: "invalid tcp protocol mode",
-			modify: func(c *Config) {
-				c.Server.TCP.V3.Protocol = "v4"
-			},
-			wantErr: true,
-		},
-		{
-			name: "invalid websocket protocol mode",
-			modify: func(c *Config) {
-				c.Server.WebSocket.V3.Protocol = "mqtt5"
 			},
 			wantErr: true,
 		},
@@ -297,26 +285,6 @@ func TestValidate(t *testing.T) {
 
 func disableMessagingListeners(c *Config) {
 	c.Listeners = ListenersConfig{}
-	c.Server.TCP.V3.Addr = ""
-	c.Server.TCP.V5.Addr = ""
-	c.Server.TCP.TLS.Addr = ""
-	c.Server.TCP.MTLS.Addr = ""
-	c.Server.WebSocket.V3.Addr = ""
-	c.Server.WebSocket.V5.Addr = ""
-	c.Server.WebSocket.TLS.Addr = ""
-	c.Server.WebSocket.MTLS.Addr = ""
-	c.Server.HTTP.Plain.Addr = ""
-	c.Server.HTTP.TLS.Addr = ""
-	c.Server.HTTP.MTLS.Addr = ""
-	c.Server.CoAP.Plain.Addr = ""
-	c.Server.CoAP.DTLS.Addr = ""
-	c.Server.CoAP.MDTLS.Addr = ""
-	c.Server.AMQP.Plain.Addr = ""
-	c.Server.AMQP.TLS.Addr = ""
-	c.Server.AMQP.MTLS.Addr = ""
-	c.Server.AMQP091.Plain.Addr = ""
-	c.Server.AMQP091.TLS.Addr = ""
-	c.Server.AMQP091.MTLS.Addr = ""
 }
 
 func TestLoadNonExistent(t *testing.T) {

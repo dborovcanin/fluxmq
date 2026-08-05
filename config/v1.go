@@ -43,7 +43,7 @@ type LoadOptions struct {
 // ListenersConfig is the normalized listener set consumed by startup.
 type ListenersConfig struct {
 	MQTT    []MQTTListenerConfig
-	AMQP091 []AMQP091V1ListenerConfig
+	AMQP091 []AMQP091ListenerConfig
 	AMQP1   []AMQP1ListenerConfig
 }
 
@@ -72,7 +72,7 @@ func (c MQTTListenerConfig) ProtocolMode() string {
 }
 
 // AMQP091ListenerConfig is a normalized AMQP 0.9.1 listener.
-type AMQP091V1ListenerConfig struct {
+type AMQP091ListenerConfig struct {
 	Address          string
 	Auth             string
 	MaxConnections   int
@@ -332,7 +332,7 @@ func defaultDocument() document {
 		Admin:           &adminDocument{Address: runtime.Admin.Address},
 		Health:          &healthDocument{Enabled: runtime.Health.Enabled, Address: runtime.Health.Address},
 		Telemetry:       &telemetryDocument{Enabled: runtime.Telemetry.Enabled, Endpoint: runtime.Telemetry.Endpoint, ServiceName: runtime.Telemetry.ServiceName, ServiceVersion: runtime.Telemetry.ServiceVersion, TracesEnabled: runtime.Telemetry.TracesEnabled, MetricsEnabled: runtime.Telemetry.MetricsEnabled, TraceSampleRate: runtime.Telemetry.TraceSampleRate},
-		ShutdownTimeout: runtime.Server.ShutdownTimeout,
+		ShutdownTimeout: runtime.ShutdownTimeout,
 		Broker:          runtime.Broker,
 		Session:         runtime.Session,
 		Log:             runtime.Log,
@@ -398,8 +398,6 @@ func Default() *Config {
 	cfg.Cluster.Raft.Enabled = false
 	cfg.Cluster.Raft.WritePolicy = writePolicyForward
 	cfg.Cluster.Raft.DistributionMode = "forward"
-	normalizeOperationalSections(cfg)
-	populateLegacyListenerRuntime(cfg)
 	return cfg
 }
 
@@ -454,7 +452,7 @@ func marshalV1(cfg *Config) ([]byte, error) {
 			TraceSampleRate: cfg.Telemetry.TraceSampleRate, Insecure: cfg.Telemetry.Insecure,
 			CAFile: cfg.Telemetry.CAFile, CertFile: cfg.Telemetry.CertFile, KeyFile: cfg.Telemetry.KeyFile,
 		},
-		ShutdownTimeout: cfg.Server.ShutdownTimeout,
+		ShutdownTimeout: cfg.ShutdownTimeout,
 		Broker:          cfg.Broker, Session: cfg.Session, Log: cfg.Log,
 		Storage: storageDocument{Type: cfg.Storage.Type, DataDir: cfg.Storage.DataDir, SyncWrites: cfg.Storage.SyncWrites, RecoverOnStartup: cfg.Storage.RecoverOnStartup},
 		Webhook: cfg.Webhook, RateLimit: cfg.RateLimit, QueueManager: cfg.QueueManager,
@@ -665,7 +663,7 @@ func normalizeDocument(doc document, options LoadOptions) (*Config, error) {
 	cfg.Queues = doc.Queues
 	cfg.Auth = doc.Auth
 	cfg.Hooks = doc.Hooks
-	cfg.Server.ShutdownTimeout = doc.ShutdownTimeout
+	cfg.ShutdownTimeout = doc.ShutdownTimeout
 	cfg.Storage = StorageConfig{
 		Type: doc.Storage.Type, DataDir: filepath.Clean(doc.Storage.DataDir),
 		SyncWrites: doc.Storage.SyncWrites, RecoverOnStartup: doc.Storage.RecoverOnStartup,
@@ -678,6 +676,11 @@ func normalizeDocument(doc document, options LoadOptions) (*Config, error) {
 	}
 
 	if doc.Admin != nil {
+		// An empty address disables the admin API, but a blank one is a typo:
+		// trimming it silently would disable the API the operator asked for.
+		if doc.Admin.Address != "" && strings.TrimSpace(doc.Admin.Address) == "" {
+			return nil, errors.New("admin.address cannot be blank when set")
+		}
 		cfg.Admin.Address = strings.TrimSpace(doc.Admin.Address)
 	}
 	if doc.Health != nil {
@@ -692,7 +695,6 @@ func normalizeDocument(doc document, options LoadOptions) (*Config, error) {
 			CAFile: doc.Telemetry.CAFile, CertFile: doc.Telemetry.CertFile, KeyFile: doc.Telemetry.KeyFile,
 		}
 	}
-	normalizeOperationalSections(cfg)
 
 	if err := normalizeListeners(cfg, *doc.Listeners); err != nil {
 		return nil, err
@@ -711,25 +713,7 @@ func normalizeDocument(doc document, options LoadOptions) (*Config, error) {
 		cfg.Cluster.Enabled = false
 		cfg.Cluster.NodeID = "single-node"
 	}
-	populateLegacyListenerRuntime(cfg)
 	return cfg, nil
-}
-
-func normalizeOperationalSections(cfg *Config) {
-	cfg.Server.AdminAPIAddr = cfg.Admin.Address
-	cfg.Server.HealthEnabled = cfg.Health.Enabled
-	cfg.Server.HealthAddr = cfg.Health.Address
-	cfg.Server.MetricsEnabled = cfg.Telemetry.Enabled
-	cfg.Server.MetricsAddr = cfg.Telemetry.Endpoint
-	cfg.Server.OtelServiceName = cfg.Telemetry.ServiceName
-	cfg.Server.OtelServiceVersion = cfg.Telemetry.ServiceVersion
-	cfg.Server.OtelTracesEnabled = cfg.Telemetry.TracesEnabled
-	cfg.Server.OtelMetricsEnabled = cfg.Telemetry.MetricsEnabled
-	cfg.Server.OtelTraceSampleRate = cfg.Telemetry.TraceSampleRate
-	cfg.Server.OtelInsecure = cfg.Telemetry.Insecure
-	cfg.Server.OtelCAFile = cfg.Telemetry.CAFile
-	cfg.Server.OtelCertFile = cfg.Telemetry.CertFile
-	cfg.Server.OtelKeyFile = cfg.Telemetry.KeyFile
 }
 
 func normalizeListeners(cfg *Config, listeners listenersDocument) error {
@@ -789,7 +773,7 @@ func normalizeListeners(cfg *Config, listeners listenersDocument) error {
 		if listener.Auth == AMQP091AuthLocal && (tlsConfig == nil || tlsConfig.ClientCAFile == "") {
 			return fmt.Errorf("%s.auth local requires tls.client_ca_file", path)
 		}
-		cfg.Listeners.AMQP091 = append(cfg.Listeners.AMQP091, AMQP091V1ListenerConfig{
+		cfg.Listeners.AMQP091 = append(cfg.Listeners.AMQP091, AMQP091ListenerConfig{
 			Address: listener.Address, Auth: listener.Auth,
 			MaxConnections:   defaultInt(listener.MaxConnections, 10000),
 			HandshakeTimeout: defaultDuration(listener.HandshakeTimeout, 10*time.Second), TLS: tlsConfig,
@@ -854,6 +838,27 @@ func validateNormalizedRuntime(cfg *Config) error {
 		if listener.Auth == AMQP091AuthLocal && len(cfg.Auth.LocalPrincipals) == 0 {
 			return fmt.Errorf("%s.auth local requires auth.local_principals", path)
 		}
+		// An exact publish target is appended and synced on the receiving node
+		// only, and is deliberately never forwarded to other nodes: forwarding
+		// would acknowledge a publisher on a barrier no single node established.
+		// In a cluster that makes those records unreachable from consumers
+		// attached elsewhere, with nothing to signal it, so refuse the
+		// combination rather than serve a principal whose records only some
+		// readers can see.
+		//
+		// The permission decides this, not the listener, exactly as it decides
+		// how a publication is routed. A prefix permission cannot name a queue,
+		// so it never takes that single-node durable path and a principal
+		// holding only prefix permissions may run clustered.
+		//
+		// A prefix publication may still be captured by a queue whose own topics
+		// pattern matches it, and that append is likewise not forwarded to nodes
+		// that already know the queue — remote consumers are served by the
+		// delivery engine instead. That is not what this rule gates: capture
+		// applies to every publisher on every protocol, so refusing a local
+		// principal for it would single out the one publisher whose behavior is
+		// declared in configuration. What is gated here is the durable-stream
+		// path, which bypasses cluster distribution entirely by design.
 		if listener.Auth == AMQP091AuthLocal && cfg.Cluster.Enabled {
 			if name, target, found := firstExactPublishTarget(cfg.Auth.LocalPrincipals); found {
 				return fmt.Errorf("auth.local_principals %q grants exact publish target %q, which cannot be combined with cluster.members because exact-target records are durable only on the receiving node; use a routing_key_prefix permission or a single-node deployment for %s", name, target, path)
@@ -1041,108 +1046,6 @@ func deriveQueueRaft(cfg *Config, nodeDataDir string) {
 	}
 }
 
-func populateLegacyListenerRuntime(cfg *Config) {
-	shutdown := cfg.Server.ShutdownTimeout
-	cfg.Server.TCP = TCPConfig{
-		V3:   TCPListenerConfig{Protocol: ProtocolModeV3},
-		V5:   TCPListenerConfig{Protocol: ProtocolModeV5},
-		TLS:  TCPListenerConfig{Protocol: ProtocolModeAuto},
-		MTLS: TCPListenerConfig{Protocol: ProtocolModeAuto},
-	}
-	cfg.Server.WebSocket = WebSocketConfig{
-		V3:   WSListenerConfig{Protocol: ProtocolModeV3, Path: defaultWSPath},
-		V5:   WSListenerConfig{Protocol: ProtocolModeV5, Path: defaultWSPath},
-		TLS:  WSListenerConfig{Protocol: ProtocolModeAuto, Path: defaultWSPath},
-		MTLS: WSListenerConfig{Protocol: ProtocolModeAuto, Path: defaultWSPath},
-	}
-	cfg.Server.AMQP = AMQPConfig{}
-	cfg.Server.AMQP091 = AMQP091Config{}
-	cfg.Server.HTTP = HTTPConfig{}
-	cfg.Server.CoAP = CoAPConfig{}
-	cfg.Server.ShutdownTimeout = shutdown
-	for _, listener := range cfg.Listeners.MQTT {
-		tlsValue := tlsValue(listener.TLS)
-		if listener.Transport == MQTTTransportWebSocket {
-			protocol := listener.ProtocolMode()
-			if protocol == ProtocolModeAuto && listener.TLS == nil {
-				protocol = ProtocolModeV3
-			}
-			value := WSListenerConfig{Addr: listener.Address, Path: listener.Path, Protocol: protocol, MaxConnections: listener.MaxConnections, ReadTimeout: listener.ReadTimeout, WriteTimeout: listener.WriteTimeout, AllowedOrigins: listener.AllowedOrigins, TLS: tlsValue}
-			if listener.TLS == nil {
-				if protocol == ProtocolModeV5 {
-					cfg.Server.WebSocket.V5 = value
-				} else {
-					cfg.Server.WebSocket.V3 = value
-				}
-			} else if listener.TLS.ClientCAFile == "" {
-				cfg.Server.WebSocket.TLS = value
-			} else {
-				cfg.Server.WebSocket.MTLS = value
-			}
-			continue
-		}
-		protocol := listener.ProtocolMode()
-		if protocol == ProtocolModeAuto && listener.TLS == nil {
-			protocol = ProtocolModeV3
-		}
-		value := TCPListenerConfig{Addr: listener.Address, Protocol: protocol, MaxConnections: listener.MaxConnections, ReadTimeout: listener.ReadTimeout, WriteTimeout: listener.WriteTimeout, TLS: tlsValue}
-		if listener.TLS == nil {
-			if protocol == ProtocolModeV5 {
-				cfg.Server.TCP.V5 = value
-			} else {
-				cfg.Server.TCP.V3 = value
-			}
-		} else if listener.TLS.ClientCAFile == "" {
-			cfg.Server.TCP.TLS = value
-		} else {
-			cfg.Server.TCP.MTLS = value
-		}
-	}
-	for _, listener := range cfg.Listeners.AMQP1 {
-		value := AMQPListenerConfig{Addr: listener.Address, MaxConnections: listener.MaxConnections, TLS: tlsValue(listener.TLS)}
-		if listener.TLS == nil {
-			cfg.Server.AMQP.Plain = value
-		} else if listener.TLS.ClientCAFile == "" {
-			cfg.Server.AMQP.TLS = value
-		} else {
-			cfg.Server.AMQP.MTLS = value
-		}
-	}
-	for _, listener := range cfg.Listeners.AMQP091 {
-		value := AMQP091ListenerConfig{Addr: listener.Address, MaxConnections: listener.MaxConnections, TLS: tlsValue(listener.TLS)}
-		switch {
-		case listener.Auth == AMQP091AuthLocal:
-			cfg.Server.AMQP091.Local = value
-		case listener.TLS == nil:
-			cfg.Server.AMQP091.Plain = value
-		case listener.TLS.ClientCAFile == "":
-			cfg.Server.AMQP091.TLS = value
-		default:
-			cfg.Server.AMQP091.MTLS = value
-		}
-	}
-	for _, listener := range cfg.Experimental.HTTP.Listeners {
-		value := HTTPListenerConfig{Addr: listener.Address, TLS: tlsValue(listener.TLS)}
-		if listener.TLS == nil {
-			cfg.Server.HTTP.Plain = value
-		} else if listener.TLS.ClientCAFile == "" {
-			cfg.Server.HTTP.TLS = value
-		} else {
-			cfg.Server.HTTP.MTLS = value
-		}
-	}
-	for _, listener := range cfg.Experimental.CoAP.Listeners {
-		value := CoAPListenerConfig{Addr: listener.Address, TLS: tlsValue(listener.TLS)}
-		if listener.TLS == nil {
-			cfg.Server.CoAP.Plain = value
-		} else if listener.TLS.ClientCAFile == "" {
-			cfg.Server.CoAP.DTLS = value
-		} else {
-			cfg.Server.CoAP.MDTLS = value
-		}
-	}
-}
-
 func normalizeListenerTLS(path string, tlsDoc *listenerTLSDocument) (*mqtttls.Config, error) {
 	if tlsDoc == nil {
 		return nil, nil
@@ -1207,13 +1110,6 @@ func defaultDuration(value, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return value
-}
-
-func tlsValue(value *mqtttls.Config) mqtttls.Config {
-	if value == nil {
-		return mqtttls.Config{}
-	}
-	return *value
 }
 
 func validPort(port int) bool {

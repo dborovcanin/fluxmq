@@ -93,7 +93,9 @@ func TestReloadRejectsExactGrantWhenDesiredConfigRemovesRunningListener(t *testi
 
 	running := config.Default()
 	running.Cluster.Enabled = true
-	running.Server.AMQP091.Local.Addr = ":5683"
+	running.Listeners.AMQP091 = []config.AMQP091ListenerConfig{{
+		Address: ":5683", Auth: config.AMQP091AuthLocal, MaxConnections: 32,
+	}}
 	running.Auth.LocalPrincipals = []config.LocalPrincipalConfig{{
 		Name:              "service",
 		CertificateURISAN: "spiffe://absmach/service",
@@ -399,8 +401,8 @@ storage:
 		t.Errorf("version should remain 1 when no runtime changes are applied, got %d", m.Version())
 	}
 	current := m.Current()
-	if current.Server.TCP.V3.Addr != cfg.Server.TCP.V3.Addr {
-		t.Errorf("runtime snapshot drifted; expected %q, got %q", cfg.Server.TCP.V3.Addr, current.Server.TCP.V3.Addr)
+	if current.Listeners.MQTT[0].Address != cfg.Listeners.MQTT[0].Address {
+		t.Errorf("runtime snapshot drifted; expected %q, got %q", cfg.Listeners.MQTT[0].Address, current.Listeners.MQTT[0].Address)
 	}
 }
 

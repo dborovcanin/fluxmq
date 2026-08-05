@@ -53,7 +53,7 @@ func writeTestCertKey(t *testing.T, dir string) (caPath, certPath, keyPath strin
 }
 
 func TestBuildTLSCredentials_DefaultUsesSystemTrust(t *testing.T) {
-	cfg, err := buildTLSCredentials(config.ServerConfig{})
+	cfg, err := buildTLSCredentials(config.TelemetryConfig{})
 	require.NoError(t, err)
 	assert.Nil(t, cfg.RootCAs, "no CA file means default system trust")
 	assert.Empty(t, cfg.Certificates)
@@ -64,7 +64,7 @@ func TestBuildTLSCredentials_WithCAFile(t *testing.T) {
 	dir := t.TempDir()
 	caPath, _, _ := writeTestCertKey(t, dir)
 
-	cfg, err := buildTLSCredentials(config.ServerConfig{OtelCAFile: caPath})
+	cfg, err := buildTLSCredentials(config.TelemetryConfig{CAFile: caPath})
 	require.NoError(t, err)
 	require.NotNil(t, cfg.RootCAs)
 }
@@ -73,10 +73,10 @@ func TestBuildTLSCredentials_WithMTLS(t *testing.T) {
 	dir := t.TempDir()
 	caPath, certPath, keyPath := writeTestCertKey(t, dir)
 
-	cfg, err := buildTLSCredentials(config.ServerConfig{
-		OtelCAFile:   caPath,
-		OtelCertFile: certPath,
-		OtelKeyFile:  keyPath,
+	cfg, err := buildTLSCredentials(config.TelemetryConfig{
+		CAFile:   caPath,
+		CertFile: certPath,
+		KeyFile:  keyPath,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, cfg.RootCAs)
@@ -84,9 +84,9 @@ func TestBuildTLSCredentials_WithMTLS(t *testing.T) {
 }
 
 func TestBuildTLSCredentials_MTLSRequiresBoth(t *testing.T) {
-	_, err := buildTLSCredentials(config.ServerConfig{OtelCertFile: "/x"})
+	_, err := buildTLSCredentials(config.TelemetryConfig{CertFile: "/x"})
 	require.Error(t, err)
-	_, err = buildTLSCredentials(config.ServerConfig{OtelKeyFile: "/x"})
+	_, err = buildTLSCredentials(config.TelemetryConfig{KeyFile: "/x"})
 	require.Error(t, err)
 }
 
@@ -95,6 +95,6 @@ func TestBuildTLSCredentials_BadCAFile(t *testing.T) {
 	bad := filepath.Join(dir, "bad.pem")
 	require.NoError(t, os.WriteFile(bad, []byte("not a cert"), 0o600))
 
-	_, err := buildTLSCredentials(config.ServerConfig{OtelCAFile: bad})
+	_, err := buildTLSCredentials(config.TelemetryConfig{CAFile: bad})
 	require.Error(t, err)
 }

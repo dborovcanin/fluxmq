@@ -501,8 +501,8 @@ func main() {
 		"amqp1_listeners", len(cfg.Listeners.AMQP1),
 		"experimental_http_listeners", len(cfg.Experimental.HTTP.Listeners),
 		"experimental_coap_listeners", len(cfg.Experimental.CoAP.Listeners),
-		"admin_api_addr", cfg.Server.AdminAPIAddr,
-		"health_enabled", cfg.Server.HealthEnabled,
+		"admin_api_addr", cfg.Admin.Address,
+		"health_enabled", cfg.Health.Enabled,
 		"cluster_enabled", cfg.Cluster.Enabled,
 		"log_level", cfg.Log.Level)
 
@@ -623,16 +623,16 @@ func main() {
 	var metrics *otel.Metrics
 	var tracer trace.Tracer
 
-	if cfg.Server.MetricsEnabled {
-		shutdown, err := otel.InitProvider(cfg.Server, cfg.Cluster.NodeID)
+	if cfg.Telemetry.Enabled {
+		shutdown, err := otel.InitProvider(cfg.Telemetry, cfg.Cluster.NodeID)
 		if err != nil {
 			slog.Error("Failed to initialize OpenTelemetry", "error", err)
 			os.Exit(1)
 		}
 		otelShutdown = shutdown
-		slog.Info("OpenTelemetry initialized", "endpoint", cfg.Server.MetricsAddr)
+		slog.Info("OpenTelemetry initialized", "endpoint", cfg.Telemetry.Endpoint)
 
-		if cfg.Server.OtelMetricsEnabled {
+		if cfg.Telemetry.MetricsEnabled {
 			m, err := otel.NewMetrics()
 			if err != nil {
 				slog.Error("Failed to create metrics", "error", err)
@@ -642,9 +642,9 @@ func main() {
 			slog.Info("OTel metrics enabled")
 		}
 
-		if cfg.Server.OtelTracesEnabled {
+		if cfg.Telemetry.TracesEnabled {
 			tracer = oteltrace.Tracer("mqtt-broker")
-			slog.Info("Distributed tracing enabled", "sample_rate", cfg.Server.OtelTraceSampleRate)
+			slog.Info("Distributed tracing enabled", "sample_rate", cfg.Telemetry.TraceSampleRate)
 		} else {
 			slog.Info("Distributed tracing disabled (zero overhead)")
 		}
@@ -1136,7 +1136,7 @@ func main() {
 		protocolMode := listener.ProtocolMode()
 		if listener.Transport == config.MQTTTransportTCP {
 			tcpCfg := tcp.Config{
-				Address: listener.Address, TLSConfig: tlsCfg, ShutdownTimeout: cfg.Server.ShutdownTimeout,
+				Address: listener.Address, TLSConfig: tlsCfg, ShutdownTimeout: cfg.ShutdownTimeout,
 				MaxConnections: listener.MaxConnections, ReadTimeout: listener.ReadTimeout,
 				WriteTimeout: listener.WriteTimeout, SendQueueSize: cfg.Session.MaxSendQueueSize,
 				DisconnectOnFull: cfg.Session.DisconnectOnFull,
@@ -1157,7 +1157,7 @@ func main() {
 		}
 
 		wsCfg := websocket.Config{
-			Address: listener.Address, Path: listener.Path, ShutdownTimeout: cfg.Server.ShutdownTimeout,
+			Address: listener.Address, Path: listener.Path, ShutdownTimeout: cfg.ShutdownTimeout,
 			TLSConfig: tlsCfg, ProtocolVersion: protocolVersionForMode(protocolMode),
 			AllowedOrigins: listener.AllowedOrigins, MaxPacketSize: maxMQTTPacketSize(cfg.Broker.MaxMessageSize),
 			ReadTimeout: listener.ReadTimeout, WriteTimeout: listener.WriteTimeout,
@@ -1183,7 +1183,7 @@ func main() {
 		}
 		httpCfg := http.Config{
 			Address:         listener.Address,
-			ShutdownTimeout: cfg.Server.ShutdownTimeout,
+			ShutdownTimeout: cfg.ShutdownTimeout,
 			TLSConfig:       tlsCfg,
 		}
 		httpServer := http.New(httpCfg, b, logger)
@@ -1211,7 +1211,7 @@ func main() {
 
 		coapCfg := coap.Config{
 			Address:         listener.Address,
-			ShutdownTimeout: cfg.Server.ShutdownTimeout,
+			ShutdownTimeout: cfg.ShutdownTimeout,
 			TLSConfig:       dtlsCfg,
 		}
 		coapServer := coap.New(coapCfg, b, logger)
@@ -1238,7 +1238,7 @@ func main() {
 			Address:          listener.Address,
 			TLSConfig:        tlsCfg,
 			HandshakeTimeout: listener.HandshakeTimeout,
-			ShutdownTimeout:  cfg.Server.ShutdownTimeout,
+			ShutdownTimeout:  cfg.ShutdownTimeout,
 			MaxConnections:   listener.MaxConnections,
 			Logger:           logger,
 		}
@@ -1276,7 +1276,7 @@ func main() {
 	)
 	amqp091Slots := []struct {
 		name   string
-		cfg    config.AMQP091V1ListenerConfig
+		cfg    config.AMQP091ListenerConfig
 		policy *amqpbroker.ConnectionPolicy
 	}{}
 	for index, listener := range cfg.Listeners.AMQP091 {
@@ -1286,7 +1286,7 @@ func main() {
 		}
 		amqp091Slots = append(amqp091Slots, struct {
 			name   string
-			cfg    config.AMQP091V1ListenerConfig
+			cfg    config.AMQP091ListenerConfig
 			policy *amqpbroker.ConnectionPolicy
 		}{name: fmt.Sprintf("amqp091[%d]", index), cfg: listener, policy: policy})
 	}
@@ -1303,7 +1303,7 @@ func main() {
 			Address:          slot.cfg.Address,
 			TLSConfig:        tlsCfg,
 			HandshakeTimeout: slot.cfg.HandshakeTimeout,
-			ShutdownTimeout:  cfg.Server.ShutdownTimeout,
+			ShutdownTimeout:  cfg.ShutdownTimeout,
 			MaxConnections:   slot.cfg.MaxConnections,
 			ConnectionPolicy: slot.policy,
 			Logger:           logger,
@@ -1333,17 +1333,17 @@ func main() {
 		}
 	}
 
-	if cfg.Server.HealthEnabled {
+	if cfg.Health.Enabled {
 		healthCfg := health.Config{
-			Address:         cfg.Server.HealthAddr,
-			ShutdownTimeout: cfg.Server.ShutdownTimeout,
+			Address:         cfg.Health.Address,
+			ShutdownTimeout: cfg.ShutdownTimeout,
 		}
 		healthServer := health.New(healthCfg, b, cl, store, logger)
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			slog.Info("Starting health check server", "address", cfg.Server.HealthAddr)
+			slog.Info("Starting health check server", "address", cfg.Health.Address)
 			if err := healthServer.Listen(ctx); err != nil {
 				serverErr <- err
 			}
@@ -1386,10 +1386,10 @@ func main() {
 	)
 
 	// Start Admin API server (HTTP + Connect/gRPC queue service)
-	if cfg.Server.AdminAPIAddr != "" {
+	if cfg.Admin.Address != "" {
 		apiCfg := api.Config{
-			Address:         cfg.Server.AdminAPIAddr,
-			ShutdownTimeout: cfg.Server.ShutdownTimeout,
+			Address:         cfg.Admin.Address,
+			ShutdownTimeout: cfg.ShutdownTimeout,
 		}
 
 		if qm != nil {
@@ -1399,7 +1399,7 @@ func main() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				slog.Info("Starting admin API server", "address", cfg.Server.AdminAPIAddr)
+				slog.Info("Starting admin API server", "address", cfg.Admin.Address)
 				if err := apiServer.Listen(ctx); err != nil {
 					serverErr <- err
 				}
@@ -1434,12 +1434,12 @@ func main() {
 
 	reloadManager.Shutdown()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer shutdownCancel()
 
 	cancel()
 
-	if err := b.Shutdown(shutdownCtx, cfg.Server.ShutdownTimeout); err != nil {
+	if err := b.Shutdown(shutdownCtx, cfg.ShutdownTimeout); err != nil {
 		slog.Error("Error during shutdown", "error", err)
 	}
 
