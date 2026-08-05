@@ -261,10 +261,12 @@ type telemetryDocument struct {
 }
 
 type storageDocument struct {
-	Type             string `yaml:"type"`
-	DataDir          string `yaml:"data_dir"`
-	SyncWrites       bool   `yaml:"sync_writes"`
-	RecoverOnStartup bool   `yaml:"recover_on_startup"`
+	Type    string `yaml:"type"`
+	DataDir string `yaml:"data_dir"`
+	// BadgerSyncWrites fsyncs the broker key-value store only. Queue
+	// durability is a separate engine and is not configurable through this key.
+	BadgerSyncWrites bool `yaml:"badger_sync_writes"`
+	RecoverOnStartup bool `yaml:"recover_on_startup"`
 }
 
 type clusterDocument struct {
@@ -339,7 +341,7 @@ func defaultDocument() document {
 		Broker:          runtime.Broker,
 		Session:         runtime.Session,
 		Log:             runtime.Log,
-		Storage:         storageDocument{Type: runtime.Storage.Type, DataDir: runtime.Storage.DataDir, SyncWrites: runtime.Storage.SyncWrites, RecoverOnStartup: runtime.Storage.RecoverOnStartup},
+		Storage:         storageDocument{Type: runtime.Storage.Type, DataDir: runtime.Storage.DataDir, BadgerSyncWrites: runtime.Storage.BadgerSyncWrites, RecoverOnStartup: runtime.Storage.RecoverOnStartup},
 		Webhook:         runtime.Webhook,
 		RateLimit:       runtime.RateLimit,
 		QueueManager:    runtime.QueueManager,
@@ -461,7 +463,7 @@ func marshalV1(cfg *Config) ([]byte, error) {
 		},
 		ShutdownTimeout: cfg.ShutdownTimeout,
 		Broker:          cfg.Broker, Session: cfg.Session, Log: cfg.Log,
-		Storage: storageDocument{Type: cfg.Storage.Type, DataDir: cfg.Storage.DataDir, SyncWrites: cfg.Storage.SyncWrites, RecoverOnStartup: cfg.Storage.RecoverOnStartup},
+		Storage: storageDocument{Type: cfg.Storage.Type, DataDir: cfg.Storage.DataDir, BadgerSyncWrites: cfg.Storage.BadgerSyncWrites, RecoverOnStartup: cfg.Storage.RecoverOnStartup},
 		Webhook: cfg.Webhook, RateLimit: cfg.RateLimit, QueueManager: cfg.QueueManager,
 		Queues: cfg.Queues, Auth: cfg.Auth, Hooks: cfg.Hooks,
 		Experimental: &experimentalDocument{
@@ -733,7 +735,7 @@ func normalizeDocument(doc document, options LoadOptions) (*Config, error) {
 	cfg.ShutdownTimeout = doc.ShutdownTimeout
 	cfg.Storage = StorageConfig{
 		Type: doc.Storage.Type, DataDir: filepath.Clean(doc.Storage.DataDir),
-		SyncWrites: doc.Storage.SyncWrites, RecoverOnStartup: doc.Storage.RecoverOnStartup,
+		BadgerSyncWrites: doc.Storage.BadgerSyncWrites, RecoverOnStartup: doc.Storage.RecoverOnStartup,
 	}
 	if cfg.Storage.DataDir == "." && strings.TrimSpace(doc.Storage.DataDir) == "" {
 		cfg.Storage.DataDir = ""

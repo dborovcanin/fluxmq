@@ -17,13 +17,13 @@ listeners:
 storage:
   type: badger
   data_dir: /var/lib/fluxmq
-  sync_writes: true
+  badger_sync_writes: true
   recover_on_startup: false
 ```
 
 - `type` is `memory` or `badger`.
 - `data_dir` is required for Badger and cluster mode.
-- `sync_writes` requests synchronous Badger writes.
+- `badger_sync_writes` requests synchronous writes to the broker key-value store. It does not affect queue durability, which is a separate engine.
 - `recover_on_startup` enables explicit startup recovery.
 
 FluxMQ derives implementation-specific broker and per-node cluster directories

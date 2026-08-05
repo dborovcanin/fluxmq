@@ -23,7 +23,7 @@ health:
 storage:
   type: badger
   data_dir: /var/lib/fluxmq
-  sync_writes: true
+  badger_sync_writes: true
 
 cluster:
   members:

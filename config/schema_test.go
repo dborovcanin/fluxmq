@@ -184,7 +184,7 @@ var v1Schema = []string{
 	"shutdown_timeout",
 	"storage.data_dir",
 	"storage.recover_on_startup",
-	"storage.sync_writes",
+	"storage.badger_sync_writes",
 	"storage.type",
 	"telemetry.ca_file",
 	"telemetry.cert_file",

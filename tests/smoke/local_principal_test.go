@@ -256,7 +256,7 @@ broker:
 storage:
   type: "badger"
   badger_dir: %q
-  sync_writes: true
+  badger_sync_writes: true
 
 cluster:
   enabled: false

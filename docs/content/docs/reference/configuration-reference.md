@@ -110,7 +110,7 @@ shutdown_timeout: 30s
 storage:
   type: badger       # memory | badger
   data_dir: /var/lib/fluxmq
-  sync_writes: true
+  badger_sync_writes: true
   recover_on_startup: false
 ```
 
