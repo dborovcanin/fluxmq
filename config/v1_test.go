@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const errLocalRequiresClientCA = "listeners.amqp091[0].auth local requires tls.client_ca_file"
+
 const minimalV1 = `version: 1
 listeners:
   mqtt:
@@ -495,6 +497,82 @@ func TestSaveRoundTripsExplicitZero(t *testing.T) {
 	got := reloaded.Listeners.MQTT[0]
 	if got.MaxConnections != 0 || got.ReadTimeout != 0 {
 		t.Fatalf("an explicit 0 did not survive a save/load round trip: %+v", got)
+	}
+}
+
+// Listener rules are defined once, in validateNormalizedRuntime, and
+// normalization no longer restates them. That is only safe if the loader still
+// rejects every one of them, so each is exercised through a real file.
+func TestLoadV1EnforcesListenerRulesAfterNormalization(t *testing.T) {
+	mqtt := func(fields string) string {
+		return strings.Replace(minimalV1, "      versions: [\"3.1.1\", \"5.0\"]", "      versions: [\"3.1.1\", \"5.0\"]\n"+fields, 1)
+	}
+	amqp091 := func(fields string) string {
+		return strings.Replace(minimalV1, "  amqp091: []", "  amqp091:\n    - address: \":5682\"\n"+fields, 1)
+	}
+
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "unknown MQTT transport",
+			body: strings.Replace(minimalV1, "transport: tcp", "transport: quic", 1),
+			want: `listeners.mqtt[0].transport must be "tcp" or "websocket"`,
+		},
+		{
+			name: "negative MQTT connection limit",
+			body: mqtt("      max_connections: -1"),
+			want: "listeners.mqtt[0].max_connections cannot be negative",
+		},
+		{
+			name: "negative MQTT read timeout",
+			body: mqtt("      read_timeout: -1s"),
+			want: "listeners.mqtt[0].read_timeout cannot be negative",
+		},
+		{
+			name: "unknown AMQP 0.9.1 auth mode",
+			body: amqp091("      auth: mutual"),
+			want: `listeners.amqp091[0].auth must be "external" or "local"`,
+		},
+		{
+			name: "negative AMQP 0.9.1 handshake timeout",
+			body: amqp091("      auth: external\n      handshake_timeout: -1s"),
+			want: "listeners.amqp091[0].handshake_timeout cannot be negative",
+		},
+		{
+			name: "local AMQP 0.9.1 auth without a client CA",
+			body: amqp091("      auth: local"),
+			want: errLocalRequiresClientCA,
+		},
+		{
+			name: "no messaging listener at all",
+			body: "version: 1\nlisteners:\n  mqtt: []\n  amqp091: []\n  amqp1: []\nstorage:\n  type: memory\n",
+			want: "at least one stable messaging listener must be configured",
+		},
+		{
+			// Kept in normalization: it is about which keys were written, not
+			// about the listener that normalization would produce.
+			name: "TCP listener carrying WebSocket-only keys",
+			body: mqtt("      path: /mqtt"),
+			want: "listeners.mqtt[0] path and allowed_origins require transport: websocket",
+		},
+		{
+			// Also normalization's own: no single listener can see the clash.
+			name: "address reused across protocols",
+			body: strings.Replace(minimalV1, "  amqp091: []", "  amqp091:\n    - address: \"127.0.0.1:1883\"\n      auth: external", 1),
+			want: "listeners.amqp091[0].address duplicates listeners.mqtt[0].address",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := loadTestYAMLError(t, test.body, LoadOptions{})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadWithOptions() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 

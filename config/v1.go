@@ -792,6 +792,15 @@ func normalizeDocument(doc document, options LoadOptions) (*Config, error) {
 	return cfg, nil
 }
 
+// normalizeListeners turns the listener documents into the runtime listener
+// set. It does only what normalization uniquely can: resolve defaults, reject
+// keys that cannot survive normalization, and reject an address reused across
+// protocols, which no single listener can detect on its own.
+//
+// Every rule that can be stated about the resulting listener lives in
+// validateNormalizedRuntime instead, which the loader runs immediately after
+// this and which also covers configurations assembled in memory. Restating
+// those rules here would give one rule two error messages, free to drift.
 func normalizeListeners(cfg *Config, listeners listenersDocument) error {
 	seenAddresses := make(map[string]string)
 	for i, listener := range listeners.MQTT {
@@ -799,29 +808,22 @@ func normalizeListeners(cfg *Config, listeners listenersDocument) error {
 		if err := validateAddress(path+".address", listener.Address, seenAddresses); err != nil {
 			return err
 		}
-		if listener.Transport != MQTTTransportTCP && listener.Transport != MQTTTransportWebSocket {
-			return fmt.Errorf("%s.transport must be %q or %q", path, MQTTTransportTCP, MQTTTransportWebSocket)
-		}
 		versions, err := normalizeMQTTVersions(path+".versions", listener.Versions)
 		if err != nil {
 			return err
-		}
-		if negative(listener.MaxConnections) {
-			return fmt.Errorf("%s.max_connections cannot be negative", path)
-		}
-		if negative(listener.ReadTimeout) || negative(listener.WriteTimeout) {
-			return fmt.Errorf("%s timeouts cannot be negative", path)
 		}
 		tlsConfig, err := normalizeListenerTLS(path+".tls", listener.TLS)
 		if err != nil {
 			return err
 		}
+		// Both keys describe an HTTP upgrade, so a TCP listener carrying them
+		// is a mistake that normalization would otherwise silently discard.
+		if listener.Transport == MQTTTransportTCP && (listener.Path != "" || len(listener.AllowedOrigins) > 0) {
+			return fmt.Errorf("%s path and allowed_origins require transport: websocket", path)
+		}
 		pathValue := listener.Path
 		if pathValue == "" && listener.Transport == MQTTTransportWebSocket {
 			pathValue = defaultWSPath
-		}
-		if listener.Transport == MQTTTransportTCP && (listener.Path != "" || len(listener.AllowedOrigins) > 0) {
-			return fmt.Errorf("%s path and allowed_origins require transport: websocket", path)
 		}
 		cfg.Listeners.MQTT = append(cfg.Listeners.MQTT, MQTTListenerConfig{
 			Address: listener.Address, Transport: listener.Transport, Versions: versions,
@@ -836,18 +838,9 @@ func normalizeListeners(cfg *Config, listeners listenersDocument) error {
 		if err := validateAddress(path+".address", listener.Address, seenAddresses); err != nil {
 			return err
 		}
-		if listener.Auth != AMQP091AuthExternal && listener.Auth != AMQP091AuthLocal {
-			return fmt.Errorf("%s.auth must be %q or %q", path, AMQP091AuthExternal, AMQP091AuthLocal)
-		}
-		if negative(listener.MaxConnections) || negative(listener.HandshakeTimeout) {
-			return fmt.Errorf("%s limits and timeouts cannot be negative", path)
-		}
 		tlsConfig, err := normalizeListenerTLS(path+".tls", listener.TLS)
 		if err != nil {
 			return err
-		}
-		if listener.Auth == AMQP091AuthLocal && (tlsConfig == nil || tlsConfig.ClientCAFile == "") {
-			return fmt.Errorf("%s.auth local requires tls.client_ca_file", path)
 		}
 		cfg.Listeners.AMQP091 = append(cfg.Listeners.AMQP091, AMQP091ListenerConfig{
 			Address: listener.Address, Auth: listener.Auth,
@@ -860,9 +853,6 @@ func normalizeListeners(cfg *Config, listeners listenersDocument) error {
 		if err := validateAddress(path+".address", listener.Address, seenAddresses); err != nil {
 			return err
 		}
-		if negative(listener.MaxConnections) || negative(listener.HandshakeTimeout) {
-			return fmt.Errorf("%s limits and timeouts cannot be negative", path)
-		}
 		tlsConfig, err := normalizeListenerTLS(path+".tls", listener.TLS)
 		if err != nil {
 			return err
@@ -872,12 +862,13 @@ func normalizeListeners(cfg *Config, listeners listenersDocument) error {
 			HandshakeTimeout: orDefault(listener.HandshakeTimeout, defaultHandshakeTimeout), TLS: tlsConfig,
 		})
 	}
-	if len(cfg.Listeners.MQTT)+len(cfg.Listeners.AMQP091)+len(cfg.Listeners.AMQP1) == 0 {
-		return errors.New("at least one stable messaging listener must be configured")
-	}
 	return nil
 }
 
+// validateNormalizedRuntime is the single definition of the rules a normalized
+// listener set must satisfy. It runs both on a freshly loaded file and on a
+// configuration assembled in memory, so every rule that can be stated about a
+// listener belongs here rather than in normalization.
 func validateNormalizedRuntime(cfg *Config) error {
 	if len(cfg.Listeners.MQTT)+len(cfg.Listeners.AMQP091)+len(cfg.Listeners.AMQP1) == 0 {
 		return errors.New("at least one stable messaging listener must be configured")
@@ -888,13 +879,19 @@ func validateNormalizedRuntime(cfg *Config) error {
 			return fmt.Errorf("%s.address cannot be empty", path)
 		}
 		if listener.Transport != MQTTTransportTCP && listener.Transport != MQTTTransportWebSocket {
-			return fmt.Errorf("%s.transport is invalid", path)
+			return fmt.Errorf("%s.transport must be %q or %q", path, MQTTTransportTCP, MQTTTransportWebSocket)
 		}
 		if _, err := normalizeMQTTVersions(path+".versions", listener.Versions); err != nil {
 			return err
 		}
-		if listener.MaxConnections < 0 || listener.ReadTimeout < 0 || listener.WriteTimeout < 0 {
-			return fmt.Errorf("%s limits and timeouts cannot be negative", path)
+		if listener.MaxConnections < 0 {
+			return fmt.Errorf("%s.max_connections cannot be negative", path)
+		}
+		if listener.ReadTimeout < 0 {
+			return fmt.Errorf("%s.read_timeout cannot be negative", path)
+		}
+		if listener.WriteTimeout < 0 {
+			return fmt.Errorf("%s.write_timeout cannot be negative", path)
 		}
 		if listener.TLS != nil && (listener.TLS.CertFile == "" || listener.TLS.KeyFile == "") {
 			return fmt.Errorf("%s.tls requires cert_file and key_file", path)
@@ -906,7 +903,7 @@ func validateNormalizedRuntime(cfg *Config) error {
 			return fmt.Errorf("%s.address cannot be empty", path)
 		}
 		if listener.Auth != AMQP091AuthExternal && listener.Auth != AMQP091AuthLocal {
-			return fmt.Errorf("%s.auth is invalid", path)
+			return fmt.Errorf("%s.auth must be %q or %q", path, AMQP091AuthExternal, AMQP091AuthLocal)
 		}
 		if listener.Auth == AMQP091AuthLocal && (listener.TLS == nil || listener.TLS.ClientCAFile == "") {
 			return fmt.Errorf("%s.auth local requires tls.client_ca_file", path)
@@ -940,8 +937,11 @@ func validateNormalizedRuntime(cfg *Config) error {
 				return fmt.Errorf("auth.local_principals %q grants exact publish target %q, which cannot be combined with cluster.members because exact-target records are durable only on the receiving node; use a routing_key_prefix permission or a single-node deployment for %s", name, target, path)
 			}
 		}
-		if listener.MaxConnections < 0 || listener.HandshakeTimeout < 0 {
-			return fmt.Errorf("%s limits and timeouts cannot be negative", path)
+		if listener.MaxConnections < 0 {
+			return fmt.Errorf("%s.max_connections cannot be negative", path)
+		}
+		if listener.HandshakeTimeout < 0 {
+			return fmt.Errorf("%s.handshake_timeout cannot be negative", path)
 		}
 		if listener.TLS != nil && (listener.TLS.CertFile == "" || listener.TLS.KeyFile == "") {
 			return fmt.Errorf("%s.tls requires cert_file and key_file", path)
@@ -952,8 +952,11 @@ func validateNormalizedRuntime(cfg *Config) error {
 		if strings.TrimSpace(listener.Address) == "" {
 			return fmt.Errorf("%s.address cannot be empty", path)
 		}
-		if listener.MaxConnections < 0 || listener.HandshakeTimeout < 0 {
-			return fmt.Errorf("%s limits and timeouts cannot be negative", path)
+		if listener.MaxConnections < 0 {
+			return fmt.Errorf("%s.max_connections cannot be negative", path)
+		}
+		if listener.HandshakeTimeout < 0 {
+			return fmt.Errorf("%s.handshake_timeout cannot be negative", path)
 		}
 		if listener.TLS != nil && (listener.TLS.CertFile == "" || listener.TLS.KeyFile == "") {
 			return fmt.Errorf("%s.tls requires cert_file and key_file", path)
@@ -1172,12 +1175,6 @@ func validateAddress(path, address string, seen map[string]string) error {
 	}
 	seen[trimmed] = path
 	return nil
-}
-
-// negative reports whether a configured value is below zero. Unset and zero are
-// both fine: zero is the explicit "unlimited" or "no deadline" setting.
-func negative[T int | time.Duration](value *T) bool {
-	return value != nil && *value < 0
 }
 
 // orDefault returns the configured value, or the fallback when the key was

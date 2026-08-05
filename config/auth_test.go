@@ -429,12 +429,12 @@ func TestValidateLocalAMQP091Listener(t *testing.T) {
 		{
 			name:      "requires client CA",
 			listener:  localListener(&mqtttls.Config{CertFile: testServerCert, KeyFile: testServerKey}),
-			wantError: "listeners.amqp091[0].auth local requires tls.client_ca_file",
+			wantError: errLocalRequiresClientCA,
 		},
 		{
 			name:      "requires TLS",
 			listener:  localListener(nil),
-			wantError: "listeners.amqp091[0].auth local requires tls.client_ca_file",
+			wantError: errLocalRequiresClientCA,
 		},
 		{
 			name:      "requires a local principal",
@@ -445,7 +445,7 @@ func TestValidateLocalAMQP091Listener(t *testing.T) {
 			name:          "rejects a negative connection limit",
 			listener:      func() *AMQP091ListenerConfig { l := validLocalListener(); l.MaxConnections = -1; return l }(),
 			withPrincipal: true,
-			wantError:     "limits and timeouts cannot be negative",
+			wantError:     "max_connections cannot be negative",
 		},
 		{
 			// An exact target is appended on the receiving node only, so a
