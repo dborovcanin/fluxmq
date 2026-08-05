@@ -265,6 +265,7 @@ validate-configs: build
 	$(BUILD_DIR)/$(BINARY) config validate --config examples/production.yaml
 	$(BUILD_DIR)/$(BINARY) config validate --config examples/cluster.yaml --node-id node1
 	$(BUILD_DIR)/$(BINARY) config validate --config deployments/docker/config.yaml
+	$(BUILD_DIR)/$(BINARY) config validate --config deployments/docker/config-local-principal.yaml
 	$(BUILD_DIR)/$(BINARY) config validate --config deployments/cluster/config/cluster.yaml --node-id node1
 
 # --- Cleanup ---
