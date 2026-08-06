@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const errNotHostPort = "is not a host:port address"
+
 const errLocalRequiresClientCA = "listeners.amqp091[0].auth local requires tls.client_ca_file"
 
 const minimalV1 = `version: 1
@@ -771,4 +773,86 @@ func TestLoadV1TelemetryHasNoMasterSwitch(t *testing.T) {
 			t.Fatalf("LoadWithOptions() error = %v, want the retired key to be rejected", err)
 		}
 	})
+}
+
+// A listen address that cannot bind used to reach startup untouched, so the
+// first sign of a typo was a broker that would not come up. Validation is the
+// gate operators are told to run first, so it has to decide what it can decide
+// from the string alone.
+func TestLoadV1ValidatesListenAddresses(t *testing.T) {
+	mqtt := func(address string) string {
+		return strings.Replace(minimalV1, `- address: "127.0.0.1:1883"`, `- address: `+address, 1)
+	}
+
+	t.Run("accepts every shape a broker can bind", func(t *testing.T) {
+		for _, address := range []string{`":1883"`, `"127.0.0.1:1883"`, `"[::1]:1883"`, `"broker.internal:1883"`} {
+			if _, err := loadTestYAMLError(t, mqtt(address), LoadOptions{}); err != nil {
+				t.Fatalf("address %s was refused: %v", address, err)
+			}
+		}
+	})
+
+	rejected := []struct {
+		name    string
+		address string
+		want    string
+	}{
+		{name: "port above the range", address: `":65672"`, want: "port 65672 is out of range"},
+		{name: "negative port", address: `":-1"`, want: "port -1 is out of range"},
+		{name: "non-numeric port", address: `"127.0.0.1:abc"`, want: `port "abc" is not a number`},
+		{name: "no port at all", address: `"1883"`, want: errNotHostPort},
+		{name: "not an address", address: `"not a port"`, want: errNotHostPort},
+		{name: "too many colons", address: `":1883:2"`, want: errNotHostPort},
+		{name: "kernel-assigned port", address: `":0"`, want: "no client can be told about"},
+	}
+	for _, test := range rejected {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := loadTestYAMLError(t, mqtt(test.address), LoadOptions{})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadWithOptions() error = %v, want %q", err, test.want)
+			}
+			if err != nil && !strings.Contains(err.Error(), "listeners.mqtt[0].address") {
+				t.Fatalf("error does not name the offending key: %v", err)
+			}
+		})
+	}
+}
+
+// The control plane and the experimental bridges bind sockets too, so a typo
+// there fails the same way rather than at startup.
+func TestLoadV1ValidatesControlPlaneAddresses(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "admin",
+			body: minimalV1 + "admin:\n  address: \":99999\"\n",
+			want: "admin.address port 99999 is out of range",
+		},
+		{
+			name: "health",
+			body: minimalV1 + "health:\n  enabled: true\n  address: \"garbage\"\n",
+			want: `health.address "garbage" ` + errNotHostPort,
+		},
+		{
+			name: "experimental http",
+			body: minimalV1 + "experimental:\n  http:\n    enabled: true\n    listeners:\n      - address: \":0\"\n",
+			want: "experimental.http.listeners[0].address port 0",
+		},
+		{
+			name: "experimental coap",
+			body: minimalV1 + "experimental:\n  coap:\n    enabled: true\n    listeners:\n      - address: \"5683\"\n",
+			want: "experimental.coap.listeners[0].address",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := loadTestYAMLError(t, test.body, LoadOptions{})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadWithOptions() error = %v, want %q", err, test.want)
+			}
+		})
+	}
 }

@@ -884,6 +884,35 @@ func normalizeListeners(cfg *Config, listeners listenersDocument) error {
 	return nil
 }
 
+// validateListenAddress checks the shape of a "host:port" listen address. The
+// host may be empty, meaning every interface, and is not resolved: validation
+// has to work on a machine that cannot see the deployment's DNS. Only what can
+// be decided from the string itself is decided here.
+//
+// A bad address used to surface as a bind failure at startup, which is exactly
+// what `fluxmq config validate` exists to catch first.
+func validateListenAddress(path, address string) error {
+	trimmed := strings.TrimSpace(address)
+	host, port, err := net.SplitHostPort(trimmed)
+	if err != nil {
+		return fmt.Errorf("%s %q is not a host:port address; use \":1883\" for every interface or \"127.0.0.1:1883\" for loopback", path, address)
+	}
+	if host != "" && strings.ContainsAny(host, " \t") {
+		return fmt.Errorf("%s host %q contains whitespace", path, host)
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil {
+		return fmt.Errorf("%s port %q is not a number", path, port)
+	}
+	if number == 0 {
+		return fmt.Errorf("%s port 0 asks the kernel for an arbitrary free port, which no client can be told about; choose a fixed port", path)
+	}
+	if !validPort(number) {
+		return fmt.Errorf("%s port %d is out of range; ports run from 1 to 65535", path, number)
+	}
+	return nil
+}
+
 // validateNormalizedRuntime is the single definition of the rules a normalized
 // listener set must satisfy. It runs both on a freshly loaded file and on a
 // configuration assembled in memory, so every rule that can be stated about a
@@ -896,6 +925,9 @@ func validateNormalizedRuntime(cfg *Config) error {
 		path := fmt.Sprintf("listeners.mqtt[%d]", i)
 		if strings.TrimSpace(listener.Address) == "" {
 			return fmt.Errorf("%s.address cannot be empty", path)
+		}
+		if err := validateListenAddress(path+".address", listener.Address); err != nil {
+			return err
 		}
 		if listener.Transport != MQTTTransportTCP && listener.Transport != MQTTTransportWebSocket {
 			return fmt.Errorf("%s.transport must be %q or %q", path, MQTTTransportTCP, MQTTTransportWebSocket)
@@ -920,6 +952,9 @@ func validateNormalizedRuntime(cfg *Config) error {
 		path := fmt.Sprintf("listeners.amqp091[%d]", i)
 		if strings.TrimSpace(listener.Address) == "" {
 			return fmt.Errorf("%s.address cannot be empty", path)
+		}
+		if err := validateListenAddress(path+".address", listener.Address); err != nil {
+			return err
 		}
 		if listener.Auth != AMQP091AuthExternal && listener.Auth != AMQP091AuthLocal {
 			return fmt.Errorf("%s.auth must be %q or %q", path, AMQP091AuthExternal, AMQP091AuthLocal)
@@ -966,10 +1001,35 @@ func validateNormalizedRuntime(cfg *Config) error {
 			return fmt.Errorf("%s.tls requires cert_file and key_file", path)
 		}
 	}
+	// The control plane and the experimental bridges bind sockets too, so they
+	// are held to the same shape as the messaging listeners.
+	if cfg.Admin.Address != "" {
+		if err := validateListenAddress("admin.address", cfg.Admin.Address); err != nil {
+			return err
+		}
+	}
+	if cfg.Health.Enabled && cfg.Health.Address != "" {
+		if err := validateListenAddress("health.address", cfg.Health.Address); err != nil {
+			return err
+		}
+	}
+	for i, listener := range cfg.Experimental.HTTP.Listeners {
+		if err := validateListenAddress(fmt.Sprintf("experimental.http.listeners[%d].address", i), listener.Address); err != nil {
+			return err
+		}
+	}
+	for i, listener := range cfg.Experimental.CoAP.Listeners {
+		if err := validateListenAddress(fmt.Sprintf("experimental.coap.listeners[%d].address", i), listener.Address); err != nil {
+			return err
+		}
+	}
 	for i, listener := range cfg.Listeners.AMQP1 {
 		path := fmt.Sprintf("listeners.amqp1[%d]", i)
 		if strings.TrimSpace(listener.Address) == "" {
 			return fmt.Errorf("%s.address cannot be empty", path)
+		}
+		if err := validateListenAddress(path+".address", listener.Address); err != nil {
+			return err
 		}
 		if listener.MaxConnections < 0 {
 			return fmt.Errorf("%s.max_connections cannot be negative", path)
