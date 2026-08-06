@@ -52,7 +52,7 @@ In practice: pick a group early (or accept the default), and avoid moving live q
 
 FluxMQ can dynamically start groups that are not explicitly listed in config.
 
-When `cluster.raft.auto_provision_groups` is enabled:
+When `experimental.queue_raft.auto_provision_groups` is enabled:
 
 - A queue can reference a group that does not exist yet.
 - The broker will create the group runtime on first use.
@@ -95,27 +95,21 @@ As a rule of thumb: start with a small number of groups (for example, one defaul
 
 This shows one default group plus a separate “hot” group:
 
+Queue Raft is experimental, disabled by default, and outside the v1
+compatibility contract. Its membership is derived from `cluster.members`, so a
+group only names the addresses that differ from the shared manifest.
+
 ```yaml
-cluster:
-  raft:
+experimental:
+  queue_raft:
     enabled: true
+    port: 7100
     auto_provision_groups: false
 
-    # Base (default) group settings
-    bind_addr: "127.0.0.1:7100"
-    data_dir: "/tmp/fluxmq/raft"
-    peers: {}
-
     groups:
-      default:
-        # Optional overrides for the default group
-        bind_addr: "127.0.0.1:7100"
-        data_dir: "/tmp/fluxmq/raft"
-        peers: {}
-
       hot:
         bind_addr: "127.0.0.1:7200"
-        data_dir: "/tmp/fluxmq/raft/groups/hot"
+        data_dir: "/var/lib/fluxmq/raft/groups/hot"
         peers: {}
 ```
 

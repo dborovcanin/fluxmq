@@ -26,6 +26,9 @@ import (
 const (
 	VersionV1 = 1
 
+	// versionKey is the schema selector every v1 document must declare.
+	versionKey = "version"
+
 	MQTTTransportTCP       = "tcp"
 	MQTTTransportWebSocket = "websocket"
 	MQTTVersion311         = "3.1.1"
@@ -601,7 +604,7 @@ func documentVersion(node *yaml.Node) (int, error) {
 		return 0, errors.New("configuration must be a mapping")
 	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value != "version" {
+		if node.Content[i].Value != versionKey {
 			continue
 		}
 		value := node.Content[i+1]
@@ -614,7 +617,7 @@ func documentVersion(node *yaml.Node) (int, error) {
 		}
 		return version, nil
 	}
-	return 0, fmt.Errorf("version is required and must be %d", VersionV1)
+	return 0, fmt.Errorf("%s is required and must be %d", versionKey, VersionV1)
 }
 
 func decodeYAMLDocument(data []byte) (*yaml.Node, error) {

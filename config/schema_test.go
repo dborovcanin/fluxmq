@@ -196,7 +196,7 @@ var v1Schema = []string{
 	"telemetry.service_version",
 	"telemetry.trace_sample_rate",
 	"telemetry.traces_enabled",
-	"version",
+	versionKey,
 	"webhook.defaults.circuit_breaker.failure_threshold",
 	"webhook.defaults.circuit_breaker.reset_timeout",
 	"webhook.defaults.retry.initial_interval",
