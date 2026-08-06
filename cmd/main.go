@@ -645,7 +645,7 @@ func main() {
 	var metrics *otel.Metrics
 	var tracer trace.Tracer
 
-	if cfg.Telemetry.Enabled {
+	if cfg.Telemetry.ExportEnabled() {
 		shutdown, err := otel.InitProvider(cfg.Telemetry, cfg.Cluster.NodeID)
 		if err != nil {
 			slog.Error("Failed to initialize OpenTelemetry", "error", err)

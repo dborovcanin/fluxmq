@@ -99,9 +99,10 @@ type HealthConfig struct {
 	Address string
 }
 
-// TelemetryConfig configures OpenTelemetry export.
+// TelemetryConfig configures OpenTelemetry export. There is no separate master
+// switch: the exporter starts when either signal is enabled, so a configuration
+// cannot ask for metrics and silently get nothing.
 type TelemetryConfig struct {
-	Enabled         bool
 	Endpoint        string
 	ServiceName     string
 	ServiceVersion  string
@@ -247,7 +248,6 @@ type healthDocument struct {
 }
 
 type telemetryDocument struct {
-	Enabled         bool    `yaml:"enabled"`
 	Endpoint        string  `yaml:"endpoint"`
 	ServiceName     string  `yaml:"service_name"`
 	ServiceVersion  string  `yaml:"service_version"`
@@ -342,7 +342,7 @@ func defaultDocument() document {
 		Version:         VersionV1,
 		Admin:           &adminDocument{Address: runtime.Admin.Address},
 		Health:          &healthDocument{Enabled: runtime.Health.Enabled, Address: runtime.Health.Address},
-		Telemetry:       &telemetryDocument{Enabled: runtime.Telemetry.Enabled, Endpoint: runtime.Telemetry.Endpoint, ServiceName: runtime.Telemetry.ServiceName, ServiceVersion: runtime.Telemetry.ServiceVersion, TracesEnabled: runtime.Telemetry.TracesEnabled, MetricsEnabled: runtime.Telemetry.MetricsEnabled, TraceSampleRate: runtime.Telemetry.TraceSampleRate},
+		Telemetry:       &telemetryDocument{Endpoint: runtime.Telemetry.Endpoint, ServiceName: runtime.Telemetry.ServiceName, ServiceVersion: runtime.Telemetry.ServiceVersion, TracesEnabled: runtime.Telemetry.TracesEnabled, MetricsEnabled: runtime.Telemetry.MetricsEnabled, TraceSampleRate: runtime.Telemetry.TraceSampleRate},
 		ShutdownTimeout: runtime.ShutdownTimeout,
 		Broker:          runtime.Broker,
 		Session:         runtime.Session,
@@ -393,9 +393,11 @@ func Default() *Config {
 	}
 	cfg.Admin = AdminConfig{Address: defaultAdminAddress}
 	cfg.Health = HealthConfig{Enabled: true, Address: defaultHealthAddress}
+	// Both signals are off by default: with no master switch, leaving one on
+	// here would make an untouched configuration dial an OTLP collector.
 	cfg.Telemetry = TelemetryConfig{
 		Endpoint: "127.0.0.1:4317", ServiceName: "fluxmq", ServiceVersion: "1.0.0",
-		MetricsEnabled: true, TraceSampleRate: 0.1,
+		TraceSampleRate: 0.1,
 	}
 	cfg.Experimental.QueueRaft = ExperimentalQueueRaftConfig{
 		Port: 7100, AutoProvisionGroups: true, ReplicationFactor: 3, SyncMode: true,
@@ -461,7 +463,7 @@ func marshalV1(cfg *Config) ([]byte, error) {
 		Admin:     &adminDocument{Address: cfg.Admin.Address},
 		Health:    &healthDocument{Enabled: cfg.Health.Enabled, Address: cfg.Health.Address},
 		Telemetry: &telemetryDocument{
-			Enabled: cfg.Telemetry.Enabled, Endpoint: cfg.Telemetry.Endpoint,
+			Endpoint:    cfg.Telemetry.Endpoint,
 			ServiceName: cfg.Telemetry.ServiceName, ServiceVersion: cfg.Telemetry.ServiceVersion,
 			TracesEnabled: cfg.Telemetry.TracesEnabled, MetricsEnabled: cfg.Telemetry.MetricsEnabled,
 			TraceSampleRate: cfg.Telemetry.TraceSampleRate, Insecure: cfg.Telemetry.Insecure,
@@ -535,6 +537,12 @@ func listenerTLSDocumentFromRuntime(cfg *mqtttls.Config) *listenerTLSDocument {
 		CertFile: cfg.CertFile, KeyFile: cfg.KeyFile, ClientCAFile: cfg.ClientCAFile,
 		MinVersion: cfg.MinVersion, CipherSuites: cfg.CipherSuites,
 	}
+}
+
+// ExportEnabled reports whether any telemetry signal is switched on, and so
+// whether the OTLP exporter should be started at all.
+func (c TelemetryConfig) ExportEnabled() bool {
+	return c.TracesEnabled || c.MetricsEnabled
 }
 
 // SecurityWarnings reports configured exposures that are legal but that an
@@ -772,7 +780,7 @@ func normalizeDocument(doc document, options LoadOptions) (*Config, error) {
 	}
 	if doc.Telemetry != nil {
 		cfg.Telemetry = TelemetryConfig{
-			Enabled: doc.Telemetry.Enabled, Endpoint: strings.TrimSpace(doc.Telemetry.Endpoint),
+			Endpoint:    strings.TrimSpace(doc.Telemetry.Endpoint),
 			ServiceName: doc.Telemetry.ServiceName, ServiceVersion: doc.Telemetry.ServiceVersion,
 			TracesEnabled: doc.Telemetry.TracesEnabled, MetricsEnabled: doc.Telemetry.MetricsEnabled,
 			TraceSampleRate: doc.Telemetry.TraceSampleRate, Insecure: doc.Telemetry.Insecure,

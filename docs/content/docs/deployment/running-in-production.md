@@ -54,8 +54,7 @@ Production readiness is workload-dependent. Use the benchmark suites in `benchma
 
 ## Observability
 
-- Enable OpenTelemetry metrics via `telemetry.enabled`,
-  `telemetry.metrics_enabled`, and `telemetry.endpoint`.
+- Enable OpenTelemetry metrics via `telemetry.metrics_enabled` and `telemetry.endpoint`. The exporter starts when either signal is enabled.
 - Consider enabling traces only for debugging (`telemetry.traces_enabled`).
 
 For configuration details, see [Configuration reference](/reference/configuration-reference).

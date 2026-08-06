@@ -35,7 +35,7 @@ health:
   enabled: true
   address: "127.0.0.1:8081"
 telemetry:
-  enabled: false
+  metrics_enabled: false
   endpoint: "127.0.0.1:4317"
 shutdown_timeout: 30s
 ```

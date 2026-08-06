@@ -735,3 +735,40 @@ func TestLoadV1StorageKeysNameTheirEngine(t *testing.T) {
 		t.Fatalf("LoadWithOptions() error = %v, want the retired key to be rejected", err)
 	}
 }
+
+// One master switch plus two signal switches let a configuration ask for
+// metrics and get nothing. The exporter is now derived from the signals, so
+// there is only one way to express each intent.
+func TestLoadV1TelemetryHasNoMasterSwitch(t *testing.T) {
+	withTelemetry := func(fields string) string {
+		return minimalV1 + "telemetry:\n" + fields
+	}
+
+	t.Run("off unless a signal is enabled", func(t *testing.T) {
+		cfg := loadTestYAML(t, minimalV1, LoadOptions{})
+		if cfg.Telemetry.ExportEnabled() {
+			t.Fatal("an untouched configuration would dial an OTLP collector")
+		}
+		if cfg.Telemetry.MetricsEnabled || cfg.Telemetry.TracesEnabled {
+			t.Fatalf("a signal defaults to on: %+v", cfg.Telemetry)
+		}
+	})
+
+	t.Run("either signal starts the exporter", func(t *testing.T) {
+		metrics := loadTestYAML(t, withTelemetry("  metrics_enabled: true\n"), LoadOptions{})
+		if !metrics.Telemetry.ExportEnabled() {
+			t.Fatal("metrics_enabled did not start the exporter")
+		}
+		traces := loadTestYAML(t, withTelemetry("  traces_enabled: true\n"), LoadOptions{})
+		if !traces.Telemetry.ExportEnabled() {
+			t.Fatal("traces_enabled did not start the exporter")
+		}
+	})
+
+	t.Run("the master switch is gone", func(t *testing.T) {
+		_, err := loadTestYAMLError(t, withTelemetry("  enabled: true\n"), LoadOptions{})
+		if err == nil || !strings.Contains(err.Error(), "telemetry.enabled: unknown field") {
+			t.Fatalf("LoadWithOptions() error = %v, want the retired key to be rejected", err)
+		}
+	})
+}

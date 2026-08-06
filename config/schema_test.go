@@ -188,7 +188,6 @@ var v1Schema = []string{
 	"storage.type",
 	"telemetry.ca_file",
 	"telemetry.cert_file",
-	"telemetry.enabled",
 	"telemetry.endpoint",
 	"telemetry.insecure",
 	"telemetry.key_file",

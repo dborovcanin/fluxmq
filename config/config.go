@@ -1152,7 +1152,7 @@ func (c *Config) Validate() error {
 	}
 
 	// OpenTelemetry validation (only if metrics enabled)
-	if c.Telemetry.Enabled {
+	if c.Telemetry.ExportEnabled() {
 		if c.Telemetry.ServiceName == "" {
 			return fmt.Errorf("telemetry.service_name cannot be empty when telemetry is enabled")
 		}

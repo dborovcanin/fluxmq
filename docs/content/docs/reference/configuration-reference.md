@@ -89,11 +89,10 @@ health:
   address: "127.0.0.1:8081"
 
 telemetry:
-  enabled: false
   endpoint: "127.0.0.1:4317"
   service_name: fluxmq
   service_version: "1.0.0"
-  metrics_enabled: true
+  metrics_enabled: false
   traces_enabled: false
   trace_sample_rate: 0.1
   insecure: false
