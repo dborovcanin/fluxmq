@@ -37,6 +37,11 @@ make docker-cluster-down
 The same manifest is mounted into every broker. `--node-id` takes precedence
 over `FLUXMQ_NODE_ID` and must name a key in `cluster.members`.
 
+Size the cluster before it holds data. Membership is fixed for the life of a
+node's data directory, so adding or removing a node in place is not supported in
+v1 — see [cluster membership](/docs/configuration/clustering) for why the
+restart fails and what the options are.
+
 The embedded-etcd peer and broker transport ports are `2380` and `7948` inside
 every container. FluxMQ derives advertised endpoints and peer maps from the
 member hostnames. Its embedded-etcd client endpoint remains on loopback.

@@ -25,6 +25,10 @@ storage:
   data_dir: /var/lib/fluxmq
   badger_sync_writes: true
 
+# Membership is fixed for the life of the data directory. A node pins its data
+# to the peer URLs it formed with, so changing members, ports.etcd_peer, or the
+# TLS/allow_insecure scheme and restarting against existing data fails by
+# design. Size the cluster before it holds data; elastic join/remove is post-v1.
 cluster:
   members:
     node1: node1

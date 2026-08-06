@@ -42,10 +42,30 @@ The shared cluster certificate, key, and CA secure both peer planes with mTLS.
 Plaintext is rejected unless `cluster.allow_insecure: true` is explicitly set
 for development.
 
-Membership is static in v1. Starting against existing data with a different
-member map fails. Elastic join/remove is post-v1. Queue Raft is separately gated
-under `experimental.queue_raft`, disabled by default, and outside the stable
-compatibility contract.
+## Membership is fixed for the life of the data directory
+
+Membership is static in v1: **a cluster cannot be grown or shrunk in place.**
+Size it correctly before it holds data.
+
+Each node pins its data directory to the etcd peer URLs it formed with. Those
+URLs are built from `cluster.members`, `cluster.ports.etcd_peer`, and the scheme
+that `cluster.tls` or `cluster.allow_insecure` selects, so changing **any** of
+them and restarting against existing data fails:
+
+```text
+static cluster membership differs from existing data in /var/lib/fluxmq/cluster/node1;
+restore the original member map or use a fresh storage directory
+```
+
+That check is deliberate. etcd records its own membership, and starting with
+peer URLs that disagree with what it recorded corrupts the cluster rather than
+resizing it. The failure is the safe outcome.
+
+To change membership you must restore the original values, or move to fresh
+storage directories and re-seed the data. Elastic join and remove is post-v1.
+
+Queue Raft is separately gated under `experimental.queue_raft`, disabled by
+default, and outside the stable compatibility contract.
 
 The Docker example at `deployments/cluster/docker-compose.yaml` uses bridge
 networking, identical internal ports, one mounted YAML, per-container node-ID
