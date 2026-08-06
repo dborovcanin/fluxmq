@@ -68,6 +68,15 @@ const (
 	validateCommand = "validate"
 )
 
+// durationOrZero unwraps an optional duration; the hook client applies its own
+// default when it receives zero.
+func durationOrZero(value *time.Duration) time.Duration {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
 func protocolVersionForMode(mode string) int {
 	switch config.NormalizeProtocolMode(mode) {
 	case config.ProtocolModeV3:
@@ -777,13 +786,15 @@ func main() {
 			}
 		}
 
-		cacheSize := cfg.Auth.External.IdentityCacheSize
-		if cacheSize == 0 {
-			cacheSize = corebroker.DefaultIdentityCacheSize
+		// An omitted key takes the built-in default; a written one is validated
+		// positive and used as written.
+		cacheSize := corebroker.DefaultIdentityCacheSize
+		if cfg.Auth.External.IdentityCacheSize != nil {
+			cacheSize = *cfg.Auth.External.IdentityCacheSize
 		}
-		cacheTTL := cfg.Auth.External.IdentityCacheTTL
-		if cacheTTL == 0 {
-			cacheTTL = corebroker.DefaultIdentityCacheTTL
+		cacheTTL := corebroker.DefaultIdentityCacheTTL
+		if cfg.Auth.External.IdentityCacheTTL != nil {
+			cacheTTL = *cfg.Auth.External.IdentityCacheTTL
 		}
 		engineOpts := []corebroker.AuthEngineOption{
 			corebroker.WithIdentityCache(cacheSize, cacheTTL),
@@ -826,7 +837,7 @@ func main() {
 
 		newHookProvider := func() corebroker.BlockingHookProvider {
 			opts := []hook.Option{
-				hook.WithTimeout(cfg.Hooks.Timeout),
+				hook.WithTimeout(durationOrZero(cfg.Hooks.Timeout)),
 				hook.WithLogger(logger),
 			}
 			switch transport {
@@ -847,7 +858,7 @@ func main() {
 		slog.Info("Blocking hooks configured",
 			"url", cfg.Hooks.URL,
 			"transport", transport,
-			"timeout", cfg.Hooks.Timeout,
+			"timeout", durationOrZero(cfg.Hooks.Timeout),
 			"fail_mode", cfg.Hooks.FailMode,
 			"protocols", cfg.Hooks.Protocols,
 			"events", cfg.Hooks.Events)
@@ -909,15 +920,16 @@ func main() {
 		// Convert queue configs from main config to queue types
 		queueCfg := queue.DefaultConfig()
 		queueCfg.AutoCommitInterval = cfg.QueueManager.AutoCommitInterval
-		// Zero leaves the dispatcher default in place.
-		if cfg.QueueManager.CaptureWorkers > 0 {
-			queueCfg.CaptureWorkers = cfg.QueueManager.CaptureWorkers
+		// An omitted key leaves the dispatcher default in place; a written one is
+		// validated positive and used as written.
+		if cfg.QueueManager.CaptureWorkers != nil {
+			queueCfg.CaptureWorkers = *cfg.QueueManager.CaptureWorkers
 		}
-		if cfg.QueueManager.CaptureQueueDepth > 0 {
-			queueCfg.CaptureQueueDepth = cfg.QueueManager.CaptureQueueDepth
+		if cfg.QueueManager.CaptureQueueDepth != nil {
+			queueCfg.CaptureQueueDepth = *cfg.QueueManager.CaptureQueueDepth
 		}
-		if cfg.QueueManager.CaptureDrainTimeout > 0 {
-			queueCfg.CaptureDrainTimeout = cfg.QueueManager.CaptureDrainTimeout
+		if cfg.QueueManager.CaptureDrainTimeout != nil {
+			queueCfg.CaptureDrainTimeout = *cfg.QueueManager.CaptureDrainTimeout
 		}
 		queueCfg.WritePolicy = queue.WritePolicy(cfg.Cluster.Raft.WritePolicy)
 		queueCfg.DistributionMode = queue.DistributionMode(cfg.Cluster.Raft.DistributionMode)

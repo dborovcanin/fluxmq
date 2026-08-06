@@ -593,3 +593,89 @@ func loadTestYAMLError(t *testing.T, body string, options LoadOptions) (*Config,
 	}
 	return LoadWithOptions(filename, options)
 }
+
+// Listeners honour a written zero because "unlimited" and "no deadline" are
+// coherent settings. Tuning knobs with no coherent zero reject one instead of
+// silently substituting a default. Both halves are the same promise: a value
+// the operator writes is never replaced by a different one.
+func TestLoadV1NeverSilentlyReplacesAWrittenValue(t *testing.T) {
+	rejected := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "capture workers",
+			body: minimalV1 + "queue_manager:\n  capture_workers: 0\n",
+			want: "queue_manager.capture_workers must be positive; omit it to take the default",
+		},
+		{
+			name: "capture queue depth",
+			body: minimalV1 + "queue_manager:\n  capture_queue_depth: 0\n",
+			want: "queue_manager.capture_queue_depth must be positive",
+		},
+		{
+			name: "capture drain timeout",
+			body: minimalV1 + "queue_manager:\n  capture_drain_timeout: 0s\n",
+			want: "queue_manager.capture_drain_timeout must be positive",
+		},
+		{
+			name: "identity cache size",
+			body: minimalV1 + "auth:\n  external:\n    url: \"http://auth:8181\"\n    identity_cache_size: 0\n",
+			want: "auth.external.identity_cache_size must be positive",
+		},
+		{
+			name: "identity cache TTL",
+			body: minimalV1 + "auth:\n  external:\n    url: \"http://auth:8181\"\n    identity_cache_ttl: 0s\n",
+			want: "auth.external.identity_cache_ttl must be positive",
+		},
+		{
+			name: "hook timeout",
+			body: minimalV1 + "hooks:\n  url: \"http://hooks:9090\"\n  timeout: 0s\n",
+			want: "hooks.timeout must be positive",
+		},
+	}
+	for _, test := range rejected {
+		t.Run("rejects a written zero: "+test.name, func(t *testing.T) {
+			_, err := loadTestYAMLError(t, test.body, LoadOptions{})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadWithOptions() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	t.Run("omitting them is always allowed", func(t *testing.T) {
+		cfg := loadTestYAML(t, minimalV1, LoadOptions{})
+		if cfg.QueueManager.CaptureWorkers != nil || cfg.QueueManager.CaptureQueueDepth != nil ||
+			cfg.QueueManager.CaptureDrainTimeout != nil {
+			t.Fatalf("omitted capture knobs were given values: %+v", cfg.QueueManager)
+		}
+		if cfg.Auth.External.IdentityCacheSize != nil || cfg.Auth.External.IdentityCacheTTL != nil {
+			t.Fatalf("omitted identity cache knobs were given values: %+v", cfg.Auth.External)
+		}
+		if cfg.Hooks.Timeout != nil {
+			t.Fatalf("omitted hook timeout was given a value: %v", *cfg.Hooks.Timeout)
+		}
+	})
+
+	t.Run("a written value is kept exactly", func(t *testing.T) {
+		body := minimalV1 + "queue_manager:\n  capture_workers: 7\n  capture_drain_timeout: 3s\n"
+		cfg := loadTestYAML(t, body, LoadOptions{})
+		if cfg.QueueManager.CaptureWorkers == nil || *cfg.QueueManager.CaptureWorkers != 7 {
+			t.Fatalf("capture_workers = %v, want 7", cfg.QueueManager.CaptureWorkers)
+		}
+		if cfg.QueueManager.CaptureDrainTimeout == nil || *cfg.QueueManager.CaptureDrainTimeout != 3*time.Second {
+			t.Fatalf("capture_drain_timeout = %v, want 3s", cfg.QueueManager.CaptureDrainTimeout)
+		}
+	})
+
+	// A listener zero stays meaningful, so the two rules do not conflict.
+	t.Run("listeners still honour a written zero", func(t *testing.T) {
+		body := strings.Replace(minimalV1, "      versions: [\"3.1.1\", \"5.0\"]",
+			"      versions: [\"3.1.1\", \"5.0\"]\n      max_connections: 0", 1)
+		cfg := loadTestYAML(t, body, LoadOptions{})
+		if cfg.Listeners.MQTT[0].MaxConnections != 0 {
+			t.Fatalf("max_connections = %d, want the written 0 to mean unlimited", cfg.Listeners.MQTT[0].MaxConnections)
+		}
+	})
+}
