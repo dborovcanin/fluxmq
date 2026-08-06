@@ -183,7 +183,7 @@ var v1Schema = []string{
 	"session.pending_queue_size",
 	"shutdown_timeout",
 	"storage.data_dir",
-	"storage.recover_on_startup",
+	"storage.queue_recover_on_startup",
 	"storage.badger_sync_writes",
 	"storage.type",
 	"telemetry.ca_file",

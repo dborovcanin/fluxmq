@@ -111,7 +111,7 @@ storage:
   type: badger       # memory | badger
   data_dir: /var/lib/fluxmq
   badger_sync_writes: true
-  recover_on_startup: false
+  queue_recover_on_startup: false
 ```
 
 `data_dir` is required for Badger and for cluster mode. FluxMQ derives internal

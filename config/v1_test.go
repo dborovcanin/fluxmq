@@ -679,3 +679,59 @@ func TestLoadV1NeverSilentlyReplacesAWrittenValue(t *testing.T) {
 		}
 	})
 }
+
+// Every other enum in the configuration is written as a name, so this one is
+// too: an operator should not have to read source to learn what a number
+// selects, and a mistyped number should not silently pick a valid mode.
+func TestLoadV1InflightOverflowIsNamed(t *testing.T) {
+	withSession := func(value string) string {
+		return minimalV1 + "session:\n  inflight_overflow: " + value + "\n  pending_queue_size: 1000\n"
+	}
+
+	for _, name := range []string{"backpressure", "queue"} {
+		t.Run(name, func(t *testing.T) {
+			cfg := loadTestYAML(t, withSession(name), LoadOptions{})
+			if string(cfg.Session.InflightOverflow) != name {
+				t.Fatalf("inflight_overflow = %q, want %q", cfg.Session.InflightOverflow, name)
+			}
+		})
+	}
+
+	t.Run("the old numeric form is refused", func(t *testing.T) {
+		_, err := loadTestYAMLError(t, withSession("1"), LoadOptions{})
+		if err == nil || !strings.Contains(err.Error(), `session.inflight_overflow must be "backpressure" or "queue"`) {
+			t.Fatalf("LoadWithOptions() error = %v, want a named-enum failure", err)
+		}
+	})
+
+	t.Run("omitted defaults to backpressure", func(t *testing.T) {
+		cfg := loadTestYAML(t, minimalV1, LoadOptions{})
+		if cfg.Session.InflightOverflow != InflightOverflowBackpressure {
+			t.Fatalf("inflight_overflow = %q, want %q", cfg.Session.InflightOverflow, InflightOverflowBackpressure)
+		}
+	})
+}
+
+// The storage section spans the broker key-value store and the queue
+// append-only log. Each key names the engine it reaches so neither is mistaken
+// for the other.
+func TestLoadV1StorageKeysNameTheirEngine(t *testing.T) {
+	body := strings.Replace(minimalV1, "storage:\n  type: memory",
+		"storage:\n  type: badger\n  data_dir: /var/lib/fluxmq\n  badger_sync_writes: true\n  queue_recover_on_startup: true", 1)
+
+	cfg := loadTestYAML(t, body, LoadOptions{})
+	if !cfg.Storage.BadgerSyncWrites {
+		t.Fatal("badger_sync_writes did not reach the key-value store setting")
+	}
+	if !cfg.Storage.QueueRecoverOnStartup {
+		t.Fatal("queue_recover_on_startup did not reach the queue log setting")
+	}
+
+	// The unqualified name is gone, so a file written against it fails loudly
+	// rather than losing the setting.
+	old := strings.Replace(body, "queue_recover_on_startup:", "recover_on_startup:", 1)
+	_, err := loadTestYAMLError(t, old, LoadOptions{})
+	if err == nil || !strings.Contains(err.Error(), "storage.recover_on_startup: unknown field") {
+		t.Fatalf("LoadWithOptions() error = %v, want the retired key to be rejected", err)
+	}
+}

@@ -901,7 +901,7 @@ func main() {
 			queueDir += "queue"
 
 			adapterCfg := logStorage.DefaultAdapterConfig()
-			adapterCfg.RecoverOnStartup = cfg.Storage.RecoverOnStartup
+			adapterCfg.RecoverOnStartup = cfg.Storage.QueueRecoverOnStartup
 			adapterCfg.RecoveryLogger = slog.Warn
 			adapter, adapterErr := logStorage.NewAdapter(queueDir, adapterCfg)
 			if adapterErr != nil {

@@ -612,20 +612,23 @@ type SubscribeRateLimitConfig struct {
 // send-quota clamp is consistent across the first CONNECT.
 const DefaultMaxInflightMessages = 256
 
-// InflightOverflowMode controls what happens when a session's inflight window is full.
-type InflightOverflowMode int
+// InflightOverflowMode controls what happens when a session's inflight window
+// is full. It is written as a name rather than a number: every other enum in
+// the configuration is a name, and an operator should not have to read source
+// to learn what "1" selects.
+type InflightOverflowMode string
 
 const (
 	// InflightOverflowBackpressure blocks the caller until a slot opens.
 	// In sync fan-out mode this stalls the publisher's read loop.
 	// In async fan-out mode this stalls the pool worker for that subscriber while
 	// other workers continue, providing natural flow control.
-	InflightOverflowBackpressure InflightOverflowMode = iota
+	InflightOverflowBackpressure InflightOverflowMode = "backpressure"
 
 	// InflightOverflowQueue buffers excess messages in a per-session pending queue.
 	// The pool worker moves on immediately; the subscriber drains the queue as ACKs arrive.
 	// On disconnect, pending messages are promoted to the offline queue (QoS > 0 only).
-	InflightOverflowQueue
+	InflightOverflowQueue InflightOverflowMode = "queue"
 )
 
 // BrokerConfig holds broker-specific settings.
@@ -694,8 +697,8 @@ type SessionConfig struct {
 
 	// InflightOverflow controls what happens when a subscriber's inflight window
 	// (bounded by ReceiveMaximum) is full during fan-out.
-	// 0 (InflightOverflowBackpressure, default): block the caller until a slot opens.
-	// 1 (InflightOverflowQueue): overflow into a per-session bounded pending queue;
+	// "backpressure" (default): block the caller until a slot opens.
+	// "queue": overflow into a per-session bounded pending queue;
 	//   the subscriber drains it as ACKs arrive.
 	InflightOverflow InflightOverflowMode `yaml:"inflight_overflow"`
 
@@ -725,10 +728,12 @@ type StorageConfig struct {
 	BadgerDir        string
 	BadgerSyncWrites bool
 
-	// RecoverOnStartup runs segment recovery before loading queues.
-	// Corrupted segments are truncated at the last valid batch and indexes
-	// are rebuilt. Disabled by default to avoid unexpected data loss.
-	RecoverOnStartup bool
+	// QueueRecoverOnStartup runs segment recovery over the queue append-only
+	// log before loading queues. Corrupted segments are truncated at the last
+	// valid batch and indexes are rebuilt. Disabled by default to avoid
+	// unexpected data loss. This is the queue log, not the key-value store
+	// that BadgerSyncWrites above configures.
+	QueueRecoverOnStartup bool
 }
 
 // ClusterConfig holds the clustering topology derived from the shared static
@@ -1115,8 +1120,11 @@ func (c *Config) Validate() error {
 	if c.Session.MaxSendQueueSize < 0 {
 		return fmt.Errorf("session.max_send_queue_size cannot be negative")
 	}
+	if c.Session.InflightOverflow == "" {
+		c.Session.InflightOverflow = InflightOverflowBackpressure
+	}
 	if c.Session.InflightOverflow != InflightOverflowBackpressure && c.Session.InflightOverflow != InflightOverflowQueue {
-		return fmt.Errorf("session.inflight_overflow must be 0 (backpressure) or 1 (queue)")
+		return fmt.Errorf("session.inflight_overflow must be %q or %q", InflightOverflowBackpressure, InflightOverflowQueue)
 	}
 	if c.Session.InflightOverflow == InflightOverflowQueue && c.Session.PendingQueueSize < 1 {
 		return fmt.Errorf("session.pending_queue_size must be at least 1 when inflight_overflow is queue")

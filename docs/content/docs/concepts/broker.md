@@ -58,11 +58,11 @@ Use async mode for workloads with many subscribers per topic (fanin). Keep synch
 
 Each subscriber session maintains an inflight window of at most `session.max_inflight_messages` unacknowledged outbound QoS 1/2 messages. When the window is full, behavior is controlled by `session.inflight_overflow`:
 
-**Backpressure (`inflight_overflow: 0`, default)**
+**Backpressure (`inflight_overflow: backpressure`, default)**
 
 The goroutine delivering to the subscriber blocks until the subscriber ACKs a message and a slot opens. This prevents message loss but slows down any goroutine (publisher or fan-out worker) that delivers to a slow subscriber.
 
-**Pending queue (`inflight_overflow: 1`)**
+**Pending queue (`inflight_overflow: queue`)**
 
 Overflow messages are buffered in a per-subscriber channel of depth `pending_queue_size`. As ACKs arrive, buffered messages are drained into the inflight window. On disconnect, QoS>0 pending messages spill to the subscriber's offline queue (subject to `max_offline_queue_size`). This decouples slow subscribers from the publisher at the cost of per-subscriber memory.
 

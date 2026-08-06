@@ -260,13 +260,19 @@ type telemetryDocument struct {
 	KeyFile         string  `yaml:"key_file"`
 }
 
+// storageDocument names two engines under one section, so each key says which
+// one it configures. type and data_dir are shared; the rest are not.
 type storageDocument struct {
-	Type    string `yaml:"type"`
+	// Type selects the broker key-value store: memory or badger.
+	Type string `yaml:"type"`
+	// DataDir is the root under which every durable path is resolved.
 	DataDir string `yaml:"data_dir"`
-	// BadgerSyncWrites fsyncs the broker key-value store only. Queue
-	// durability is a separate engine and is not configurable through this key.
+	// BadgerSyncWrites fsyncs each write to the broker key-value store, which
+	// holds retained messages and sessions.
 	BadgerSyncWrites bool `yaml:"badger_sync_writes"`
-	RecoverOnStartup bool `yaml:"recover_on_startup"`
+	// QueueRecoverOnStartup runs segment recovery over the queue append-only
+	// log, a separate engine from the key-value store above.
+	QueueRecoverOnStartup bool `yaml:"queue_recover_on_startup"`
 }
 
 type clusterDocument struct {
@@ -341,7 +347,7 @@ func defaultDocument() document {
 		Broker:          runtime.Broker,
 		Session:         runtime.Session,
 		Log:             runtime.Log,
-		Storage:         storageDocument{Type: runtime.Storage.Type, DataDir: runtime.Storage.DataDir, BadgerSyncWrites: runtime.Storage.BadgerSyncWrites, RecoverOnStartup: runtime.Storage.RecoverOnStartup},
+		Storage:         storageDocument{Type: runtime.Storage.Type, DataDir: runtime.Storage.DataDir, BadgerSyncWrites: runtime.Storage.BadgerSyncWrites, QueueRecoverOnStartup: runtime.Storage.QueueRecoverOnStartup},
 		Webhook:         runtime.Webhook,
 		RateLimit:       runtime.RateLimit,
 		QueueManager:    runtime.QueueManager,
@@ -463,7 +469,7 @@ func marshalV1(cfg *Config) ([]byte, error) {
 		},
 		ShutdownTimeout: cfg.ShutdownTimeout,
 		Broker:          cfg.Broker, Session: cfg.Session, Log: cfg.Log,
-		Storage: storageDocument{Type: cfg.Storage.Type, DataDir: cfg.Storage.DataDir, BadgerSyncWrites: cfg.Storage.BadgerSyncWrites, RecoverOnStartup: cfg.Storage.RecoverOnStartup},
+		Storage: storageDocument{Type: cfg.Storage.Type, DataDir: cfg.Storage.DataDir, BadgerSyncWrites: cfg.Storage.BadgerSyncWrites, QueueRecoverOnStartup: cfg.Storage.QueueRecoverOnStartup},
 		Webhook: cfg.Webhook, RateLimit: cfg.RateLimit, QueueManager: cfg.QueueManager,
 		Queues: cfg.Queues, Auth: cfg.Auth, Hooks: cfg.Hooks,
 		Experimental: &experimentalDocument{
@@ -735,7 +741,7 @@ func normalizeDocument(doc document, options LoadOptions) (*Config, error) {
 	cfg.ShutdownTimeout = doc.ShutdownTimeout
 	cfg.Storage = StorageConfig{
 		Type: doc.Storage.Type, DataDir: filepath.Clean(doc.Storage.DataDir),
-		BadgerSyncWrites: doc.Storage.BadgerSyncWrites, RecoverOnStartup: doc.Storage.RecoverOnStartup,
+		BadgerSyncWrites: doc.Storage.BadgerSyncWrites, QueueRecoverOnStartup: doc.Storage.QueueRecoverOnStartup,
 	}
 	if cfg.Storage.DataDir == "." && strings.TrimSpace(doc.Storage.DataDir) == "" {
 		cfg.Storage.DataDir = ""

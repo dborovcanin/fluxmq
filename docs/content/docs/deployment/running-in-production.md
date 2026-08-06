@@ -27,7 +27,7 @@ Production readiness is workload-dependent. Use the benchmark suites in `benchma
 
 ## Durability
 
-- `storage.recover_on_startup` is `false` by default, which means a corrupted
+- `storage.queue_recover_on_startup` is `false` by default, which means a corrupted
   log segment fails startup rather than being silently truncated. Keep it that
   way: it turns silent data loss into a startup error you can act on. Enable it
   deliberately, after taking a backup, when you have decided to discard the

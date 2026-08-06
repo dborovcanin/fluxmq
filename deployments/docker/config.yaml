@@ -27,7 +27,7 @@ broker:
   fan_out_workers: 0
 
 session:
-  inflight_overflow: 0
+  inflight_overflow: backpressure
   pending_queue_size: 1000
 
 log:
